@@ -2,30 +2,6 @@
 title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
 subtitle: README
 authors: Ghai et al. (2026)
-format: 
-  typst:
-    toc: true
-    toc-depth: 2
-  pdf:
-    toc: true
-    toc-depth: 2
-    echo: false
-    number-sections: true
-    fig-caption: true
-    fig-height: 12
-    fig-width: 8
-    latex-engine: xelatex
-    fontsize: 10pt
-    mainfont: "Times New Roman"
-    header-includes:
-      - \usepackage{pdflscape}   
-      - \usepackage{geometry}     
-      - \geometry{margin=1in}     
-      - \usepackage{longtable} 
-      - \usepackage{adjustbox}
----
-
-\newpage
 
 ## Overview
 
