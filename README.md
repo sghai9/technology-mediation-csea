@@ -7,22 +7,14 @@ This repository contains the analytical code for a study examining technology-fa
 ```
 project/
 ├── reference-data/         # ITU data for population burden validation
-│   ├── Individuals using the Internet.csv         
-│   └── Individuals using the Internet_gender.csv   
 ├── qmd/                    # Analysis scripts
-│   ├── 1a_preprocess.qmd     
-│   ├── 1b_population_burden.qmd
-│   ├── 2a_disclosure.qmd
-│   ├── 2b_CSEAmodelling.qmd
-│   ├── 3a_disclosure_modelling.qmd
-│   └── 3b_disclosure_modelling_imp.qmd
-├── rendered/               # HTML outputs (code + results)
-│   ├── 1a_preprocess.html 
-│   ├── 1b_population_burden.html
-│   ├── 2a_disclosure.html
-│   ├── 2b_CSEAmodelling.html
-│   ├── 3a_disclosure_modelling.html
-│   └── 3b_disclosure_modelling_imp.html
+├── 1a_preprocess.html      # Rendered outputs
+├── 1b_population_burden.html
+├── 2a_disclosure.html
+├── 2b_CSEAmodelling.html
+├── 3a_disclosure_modelling.html
+├── 3b_disclosure_modelling_imp.html
+├── LICENSE
 └── README.md
 ```
 ## System Requirements
@@ -34,8 +26,6 @@ project/
 | R | 4.4.1 (2024-06-14) |
 | CmdStan | 2.32.2 |
 | Quarto | 1.4.x |
-
-Compatible with Windows, macOS, and Linux.
 
 Required R packages:
 
@@ -57,14 +47,14 @@ cmdstanr::install_cmdstan()
 
 ### Non-standard hardware
 
-No non-standard hardware was required. The modelling scripts use parallel computation with up to 8 CPU cores. The pipeline was run on a standard desktop or laptop.
+No non-standard hardware was required. The modelling scripts use parallel computation with up to 8 CPU cores.
 
 ## Rendered Outputs
 
 > **A demo dataset is not available.** The data used in this study involve sensitive child-level responses collected under a restricted access agreement with UNICEF and cannot be shared publicly. We considered generating synthetic data but determined this could risk misuse or misinterpretation given the sensitivity and complexity of the variables.
 >
-> **In lieu of a runnable demo, all scripts have been rendered to HTML outputs** (see `rendered/`) that show every line of code alongside all results, figures, and model diagnostics. Reviewers and readers are encouraged to inspect these outputs directly.
-
+> **In lieu of a runnable demo, all scripts have been rendered to HTML outputs** (available in the repository root) that show every line of code alongside all results, figures, and model diagnostics.
+> 
 ### Expected output
 
 Each rendered HTML document shows:
@@ -151,10 +141,4 @@ The data used in this analysis are highly sensitive, involving reports of techno
 
 ## License and Open Science
 
-This software is released under the **MIT License** 
-(OSI-approved; https://opensource.org/licenses/MIT).
-
-We are committed to open science and have released all preprocessing and modelling code publicly, with all scripts rendered to **HTML** showing code and output side-by-side. While the underlying data are restricted (see Data Availability above), all analysis steps are fully documented 
-to support methodological transparency.
-
-**Last updated:** March 2026
+This software is released under the MIT License (OSI-approved; https://opensource.org/licenses/MIT). All preprocessing and modelling code is publicly available, with scripts rendered to HTML showing code and output side-by-side.
