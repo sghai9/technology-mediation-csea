@@ -1,8 +1,3 @@
----
-title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
-subtitle: README
-authors: Ghai et al. (2026)
-
 ## Overview
 
 This repository contains the analytical code for a study examining technology-facilitated child sexual exploitation and abuse (CSEA) across Eastern and Southern Africa and Southeast Asia. The analysis uses data from the Disrupting Harm study conducted by UNICEF, ECPAT International, and INTERPOL.
