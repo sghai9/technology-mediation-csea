@@ -1,0 +1,1464 @@
+---
+title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
+authors: Ghai et al.
+subtitle: Modelling script (complete case analysis)
+format: 
+  typst:
+    toc: true
+    toc-depth: 2
+  pdf:
+    toc: true
+    toc-depth: 2
+    echo: false
+    number_sections: true
+    fig_caption: true
+    fig_height: 12
+    fig_width: 8
+    latex_engine: xelatex
+    fontsize: 10pt
+    mainfont: "Times New Roman"
+    header-includes:
+      - \usepackage{pdflscape}   
+      - \usepackage{geometry}     
+      - \geometry{margin=1in}     
+      - \usepackage{longtable} 
+      - \usepackage{adjustbox}  
+  html:
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    number_sections: true
+    fig_caption: true
+    highlight-style: pygments
+    css: styles.css
+---
+
+# Analysis Overview
+
+To examine associations between demographic and socio-cultural factors and disclosure of technology-facilitated CSEA, we fit Bayesian multilevel logistic regression models using brms with survey weights. All analyses used complete-case with missing data. 
+
+**Model Specifications**
+
+1. **Pre-registered confirmatory analysis**: Logistic regression with all predictors (gender, age, premarital sex attitudes, gender norms, enabling parental  mediation, sex education, help-seeking, digital skills), using survey weights but no random effects.
+
+2. **Pre-registered exploratory analysis**: Multilevel models with random intercepts by country (n=12), examining three disclosure outcomes:
+   - Any disclosure (toldall): disclosure to any channel
+   - Formal disclosure (toldformal): to police, helpline, teacher, or social worker
+   - Informal disclosure (toldinformal): to family or friends or other adults
+
+3. **Channel-specific models** (exploratory, not pre-registered): Separate multilevel models for each of ten disclosure channels, using identical predictors and random intercepts by country. This approach examines whether predictors vary by disclosure channels.
+
+4. **Random slopes sensitivity analysis** (exploratory, not pre-registered): For each predictor, we fit a model with both random intercepts and random slopes, allowing predictor effects to vary by country. Models were compared using leave-one-out cross-validation (LOO-CV) with Pareto-smoothed importance sampling.
+
+All models used Bernoulli family with logit link. We ran 4 chains with 2,000 iterations (1,000 warmup) using cmdstanr backend with adapt_delta=0.99. We assessed model fit using LOO-CV and Pareto-k diagnostics. For channel-specific models, we calculated events per variable (EPV) to assess statistical power.
+```{r}
+#| label: options
+#| message: false
+#| cache: false
+
+# Load packages
+library(tidyverse)
+library(brms)
+library(posterior)
+library(bayesplot)
+library(bayestestR)
+library(tidybayes)
+library(marginaleffects)
+library(loo)
+library(patchwork)
+library(survey)
+library(srvyr)
+library(knitr)
+library(kableExtra)
+library(gt)
+library(gtsummary)
+library(scales)
+library(viridis)
+library(colorspace)
+library(RColorBrewer)
+library(corrplot)
+library(ggrepel)
+library(ggdist)
+library(ggh4x)
+library(ggnewscale)
+library(car)
+library(performance)
+library(broom.mixed)
+library(mice)
+library(janitor)
+library(glue)
+library(rlang)
+library(rstan)
+
+knitr::opts_chunk$set(dev = "png")
+
+# Modelling: Always run brms with cmdstanr maybe with threading
+dir.create("models", FALSE)
+options(
+  brms.backend = "cmdstanr",
+  mc.cores = min(parallel::detectCores(), 8),
+  brms.threads = parallel::detectCores() %/% 4
+)
+
+# Make plots pretty 
+theme_set(
+  theme_linedraw() +
+    theme(panel.grid = element_blank())
+)
+
+# Output options
+opts_chunk$set(
+  eval = TRUE,
+  cache = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  echo = knitr::is_html_output()
+)
+options(digits = 2)
+ITER <- 2000
+```
+
+```{r, echo=FALSE}
+#| label: load-data-victim
+d_victim <- readRDS("data-raw/victim_dh.rds")
+```
+
+```{r select-vars}
+#| label: select-variables
+d_victim <- d_victim %>%
+  select(
+    pid = CBU_ID, 
+    sex, 
+    age, 
+    presex, 
+    nindex, 
+    parentmediate,
+    sexed,
+    urbanrural, 
+    helpseeking, 
+    digitalskills, 
+    COUNTRY, 
+    wgt_scaled, 
+    victim,
+    starts_with("toldnoone_"), 
+    starts_with("abuse_"), 
+    starts_with("police_"),
+    starts_with("helpline_"), 
+    starts_with("teacher_"), 
+    starts_with("sworker_"),
+    starts_with("friend_"), 
+    starts_with("sibling_"), 
+    starts_with("father_"),
+    starts_with("mother_"), 
+    starts_with("other_"), 
+    starts_with("othera_")
+  )
+
+# Identical to function in 2a_disclosure.qmd
+# d_report <- disclosure_data(d_victim)
+```
+
+```{r disclosure-wrangling}
+#| include: false 
+#| message: false
+#| echo: false
+
+# Duplicated here so this script runs independently
+disclosure_data <- function(data) {
+  
+  # filter victims only
+  victims <- data %>% filter(victim == 1)
+  
+  # disclosure channel names
+  channels <- c("toldnoone", "police", "helpline", "teacher", "sworker", 
+                "friend", "sibling", "father", "mother", "other", "othera")
+  
+  # function to check if disclosed any abuse type to this channel
+  check_channel <- function(prefix, data) {
+    # abuse types are a-i
+    cols <- paste0(prefix, "_", letters[1:9])
+    rowSums(data[cols], na.rm = TRUE) > 0
+  }
+  
+  # apply to each channel
+  for (ch in channels) {
+    victims[[ch]] <- check_channel(ch, victims)
+  }
+  
+  ## create disclosure categories
+  victims %>%
+    mutate(
+      # any disclosure?
+      toldall = police | helpline | teacher | sworker | friend | 
+                 sibling | father | mother | other | othera,
+      # formal vs informal
+      toldformal = police | helpline | teacher | sworker,
+      toldinformal = friend | sibling | father | mother | other | othera,
+      
+      # make mutually exclusive 
+      no_disclosure = !toldall,
+      informal_only = toldinformal & !toldformal,
+      formal_only = toldformal & !toldinformal,
+      both_channels = toldinformal & toldformal,
+      
+      # now factor
+      disclosure_type = case_when(
+        both_channels ~ "Both",
+        informal_only ~ "Informal only",
+        formal_only ~ "Formal only",
+        no_disclosure ~ "None"
+      ),
+      disclosure_type = factor(disclosure_type, 
+                              levels = c("None", "Informal only", "Formal only", "Both"))
+    )
+}
+
+d_report <- disclosure_data(d_victim)
+```
+
+
+## Define Labels
+```{r}
+# labels
+channel_labels <- c(
+  police   = "Police",
+  helpline = "Helpline",
+  sworker  = "Social Worker",
+  teacher  = "Teacher",
+  mother   = "Mother",
+  father   = "Father",
+  sibling  = "Sibling",
+  friend   = "Friend",
+  other    = "Other",
+  othera   = "Other Adult"
+)
+
+# facet labels for predictors including variations (used throughout)
+facet_labels <- c(
+  "b_Intercept" = "Intercept",
+  "b_sex1" = "Girl (vs Boy)",
+  "b_sexGirl" = "Girl (vs Boy)",
+  "sex1" = "Girl (vs Boy)",
+  "sexGirl" = "Girl (vs Boy)",
+  "b_age" = "Age (per year)",
+  "age" = "Age (per year)",
+  "b_presex1" = "Premarital sex",
+  "presex1" = "Premarital sex",
+  "b_nindex" = "Inequitable gender attitudes",
+  "nindex" = "Inequitable gender attitudes",
+  "b_parentmediate" = "Enabling parental mediation",
+  "parentmediate" = "Enabling parental mediation",
+  "b_sexed1" = "Sex education",
+  "sexed1" = "Sex education",
+  "b_helpseeking1" = "Help-seeking",
+  "helpseeking1" = "Help-seeking",
+  "b_digitalskills" = "Digital skills",
+  "digitalskills" = "Digital skills"
+)
+
+# separate label map for odds-ratio plots - some intentional redundancy 
+predictor_map <- c(
+  b_Intercept     = "Intercept",
+  b_sex1          = "Girls (vs Boys)",
+  b_age           = "Age (per year)",
+  b_presex1       = "Premarital sex",
+  b_nindex        = "Inequitable attitudes towards sex",
+  b_parentmediate = "Enabling parental mediation",
+  b_sexed1        = "Sex education",
+  b_helpseeking1  = "Help-seeking",
+  b_digitalskills = "Digital skills to report"
+)
+predictors_set <- names(predictor_map)
+
+# clean labels for correlation plots
+clean_labels <- c(
+  "sex1" = "Girl (vs Boy)",
+  "sexGirl" = "Girl (vs Boy)",
+  "age" = "Age (per year)",
+  "presex1" = "Premarital sex",
+  "nindex" = "Inequitable gender attitudes",
+  "parentmediate" = "Enabling parental mediation",
+  "sexed1" = "Sex education",
+  "helpseeking1" = "Help-seeking",
+  "digitalskills" = "Digital skills"
+)
+```
+
+Select relevant variables
+```{r}
+
+d_report <- d_report %>%
+       select(
+      c(
+    -ends_with(c(
+      "_a", 
+      "_b", 
+      "_c", 
+      "_d", 
+      "_e", 
+      "_f", 
+      "_g", 
+      "_h", 
+      "_i")),
+      victim
+    )
+  )
+```
+
+## (1) Pre-Registered Confirmatory Analysis: Logistic Regression (With Missing)
+This model estimates the association between predictors and the likelihood of disclosure (toldall), using logistic regression and incorporating survey weights. This analysis includes the model fit performed on the data with missing values.
+
+```{r}
+#| output: false
+fit_report_all_glm <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + 
+    digitalskills,
+  data = d_report,
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  file = "models/brm-report-all-glm"
+)
+```
+
+We extract posterior summaries and compute odds ratios with 95% credible intervals. Labels are applied for interpretability.
+```{r}
+posterior_results <- posterior_summary(fit_report_all_glm)
+
+posterior_df <- as.data.frame(posterior_results) %>%
+  tibble::rownames_to_column(var = "Parameter") %>%
+  setNames(c("Parameter", "Estimate", "Est.Error", "Lower_CI", "Upper_CI")) %>%
+  filter(Parameter != "b_Intercept") %>%
+  mutate(
+    Parameter = case_when(
+      Parameter %in% names(facet_labels) ~ facet_labels[Parameter],
+      sub("^b_", "", Parameter) %in% names(facet_labels) ~ facet_labels[sub("^b_", "", Parameter)],
+      TRUE ~ Parameter
+    ),
+    `Odds Ratio` = exp(Estimate),
+    `Lower OR CI` = exp(Lower_CI),
+    `Upper OR CI` = exp(Upper_CI)
+  ) %>%
+  select(Parameter, Estimate, Lower_CI, Upper_CI, `Odds Ratio`, `Lower OR CI`, `Upper OR CI`)
+
+posterior_df %>%
+  knitr::kable(
+    digits = 3,
+    col.names = c("Parameter", "Estimate", "Lower CI", "Upper CI", 
+                  "Odds Ratio", "Lower OR CI", "Upper OR CI"),
+    booktabs = TRUE,
+    align = c("l", rep("r", 6))
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position"), font_size = 9)
+```
+
+## (2) Pre-Registered Exploratory Analysis: Random Intercepts Model (With Missing)
+As part of our pre-registered exploratory analyses, we fit three models examining disclosure across three categories:
+- toldall (any disclosure),
+- toldformal (formal channels only),
+- toldinformal (informal channels only).
+```{r}
+#| label: fit-report-separate
+#| output: false
+
+# common formula stem
+model_stem <- "| weights(wgt_scaled) ~ sex + age + presex + nindex + parentmediate + sexed + helpseeking + digitalskills + (1 | COUNTRY)"
+
+# composite disclosure outcomes
+model_toldall       <- paste("toldall", model_stem)
+model_toldformal    <- paste("toldformal", model_stem)
+model_toldinformal  <- paste("toldinformal", model_stem)
+```
+
+All models include random intercepts by country and use scaled weights.
+```{r}
+# any disclosure
+fit_report_all <- brm(
+  model_toldall,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-all",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# formal disclosure
+fit_report_formal <- brm(
+  model_toldformal,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-formal",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# informal disclosure
+fit_report_informal <- brm(
+  model_toldinformal,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-informal",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+```
+
+## (3) Channel-specific models (exploratory, not pre-registered)
+We also fit channel-specific models which fit separate logistic regression models for each channel using identical predictor sets, allowing us to: (a) identify channel-specific predictors without aggregation, (b) examine which factors distinguish disclosure to one particular channel versus non-disclosure to that channel, and (c) provide granular insight into the distinct pathway’s children use when disclosing. 
+
+```{r}
+#| label: fit-report-diff
+#| output: false
+
+# formal channels
+model_police        <- paste("police", model_stem)
+model_helpline      <- paste("helpline", model_stem)
+model_sworker       <- paste("sworker", model_stem)
+model_teacher       <- paste("teacher", model_stem)
+
+# informal channels - family
+model_mother        <- paste("mother", model_stem)
+model_father        <- paste("father", model_stem)
+model_sibling       <- paste("sibling", model_stem)
+
+# informal channels - peers
+model_friend        <- paste("friend", model_stem)
+
+# other
+model_other         <- paste("other", model_stem)
+model_othera        <- paste("othera", model_stem)
+```
+Now we fit all models 
+```{r}
+# police
+fit_report_police <- brm(
+  model_police,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-policee",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# helpline
+fit_report_helpline <- brm(
+  model_helpline,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-helpline",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# social worker
+fit_report_sworker <- brm(
+  model_sworker,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-sworker",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# teacher
+fit_report_teacher <- brm(
+  model_teacher,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-teacher",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# mother
+fit_report_mother <- brm(
+  model_mother,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-mother",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# father
+fit_report_father <- brm(
+  model_father,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-father",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# sibling
+fit_report_sibling <- brm(
+  model_sibling,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-sibling",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# friend
+fit_report_friend <- brm(
+  model_friend,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-friend",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+
+# other adults
+fit_report_othera <- brm(
+  model_othera,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  file = "models/brm-report-othera",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+```
+We create named list of all models and set up a function to extract posterior summaries from all tables 
+```{r}
+# all models 
+all_models <- list(
+  toldall = fit_report_all,
+  toldformal = fit_report_formal,
+  toldinformal = fit_report_informal,
+  police = fit_report_police,
+  helpline = fit_report_helpline,
+  sworker = fit_report_sworker,
+  teacher = fit_report_teacher,
+  mother = fit_report_mother,
+  father = fit_report_father,
+  sibling = fit_report_sibling,
+  friend = fit_report_friend,
+  othera = fit_report_othera
+)
+
+report_names <- c(
+  "toldall" = "Any Disclosure",
+  "toldformal" = "Formal Disclosure",
+  "toldinformal" = "Informal Disclosure",
+   "police"   = "Police",
+  "helpline" = "Helpline",
+  "sworker"  = "Social Worker",
+  "teacher"  = "Teacher",
+  "mother"   = "Mother",
+  "father"   = "Father",
+  "sibling"  = "Sibling",
+  "friend"   = "Friend",
+  "othera"   = "Other Adult"
+)
+# summarize all 
+summarise_draws_pop <- function(model_list, facet_labels, report_names) {
+  names_list <- names(model_list)
+  
+  model_list %>%
+    map(~ {
+      ps <- posterior::summarise_draws(
+        as_draws_df(.x),
+        .cores = 1
+      ) %>%
+        filter(grepl("^b_", variable))
+      ps
+    }) %>%
+    bind_rows(.id = "report") %>%
+    mutate(
+      report = factor(report, levels = names_list, labels = report_names[names_list]),
+      term = as.character(variable)
+    ) %>%
+    filter(term != "b_Intercept") %>%
+    mutate(
+      predictor = case_when(
+        term %in% names(facet_labels) ~ facet_labels[term],
+        sub("^b_", "", term) %in% names(facet_labels) ~ facet_labels[sub("^b_", "", term)],
+        TRUE ~ term
+      ),
+      Estimate = glue::glue(
+  "{scales::number(mean, accuracy = 0.01)} ",
+  "[{scales::number(q2.5, accuracy = 0.01)}, ",
+  "{scales::number(q97.5, accuracy = 0.01)}]"
+      )
+    ) %>%
+    select(predictor, report, Estimate) %>%
+    pivot_wider(names_from = report, values_from = Estimate)
+}
+```
+
+### Model summary: Random Intercepts Model
+```{r}
+#| label: tbl-composite-channels
+#| tbl-cap: "Composite disclosure outcomes (posterior means with 95% credible intervals)"
+
+list(
+  fit_report_all,
+  fit_report_formal,
+  fit_report_informal
+) %>%
+  purrr::map(~ summarise_draws_pop(.x)) %>%
+  bind_rows(.id = "report") %>%
+  mutate(
+    report    = factor(report, levels = 1:3, labels = c("All", "Formal", "Informal")),
+    variable  = as.character(variable),
+    predictor = coalesce(unname(facet_labels[variable]), variable),
+    Estimate  = glue("{number(Estimate, accuracy = .01)} [{number(Q2.5, accuracy = .01)}, {number(Q97.5, accuracy = .01)}]")
+  ) %>%
+  select(predictor, report, Estimate) %>%
+  pivot_wider(names_from = report, values_from = Estimate) %>%
+  kable()
+```
+
+### Variance Inflation Factor
+All predictors entered as 1-df terms. We computed classic VIFs (and the corresponding standard-error inflation, √VIF) on the complete-case analytic matrix for each outcome (samples differ by missingness). All VIFs were 1.0–2.0, well below common thresholds used to flag multicollinearity (e.g., VIF ≥5–10), indicating no substantial collinearity.
+```{r} 
+outcomes   <- c("toldall","toldformal","toldinformal")
+predictors <- c("sex","age","presex","nindex","parentmediate","sexed","helpseeking","digitalskills")
+
+vif <- function(m) {
+  v <- car::vif(m)
+  tibble(
+    term   = names(v),
+    VIF    = as.numeric(v),
+    `√VIF` = sqrt(as.numeric(v))
+  )
+}
+
+dat_cc <- d_report %>%
+  select(all_of(c(outcomes, predictors, "wgt_scaled"))) %>%
+  drop_na()
+
+vif_table <- map_dfr(outcomes, function(y){
+  fml <- reformulate(predictors, response = y)
+  m <- glm(fml, data = dat_cc, family = binomial(), weights = wgt_scaled)
+  vif(m) %>% mutate(outcome = y, .before = 2)
+}) %>%
+  arrange(outcome, desc(`√VIF`)) %>%
+  mutate(
+    VIF    = sprintf("%.2f", VIF),
+    `√VIF` = sprintf("%.2f", `√VIF`),
+    outcome = dplyr::recode(outcome,
+      toldall      = "Any channels",
+      toldformal   = "Formal channels",
+      toldinformal = "Informal channels"
+    ),
+    term = dplyr::recode(term,
+      sex           = "Girls (vs Boys)",
+      age           = "Age (per year)",
+      presex        = "Premarital sex",
+      nindex        = "Inequitable gender attitudes",
+      parentmediate = "Enabling parental mediation",
+      sexed         = "Sex education",
+      helpseeking   = "Help-seeking",
+      digitalskills = "Digital skills to report"
+    )
+  )
+
+kable(
+  vif_table %>% select(outcome, term, VIF, `√VIF`),
+  booktabs    = TRUE,
+  longtable   = TRUE,
+  col.names   = c("Outcome", "Term", "VIF", "√VIF"),
+  digits      = NA,
+  format.args = list(scientific = FALSE)
+) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+### Computing R2 
+We also summarise model fit using Bayesian R² (posterior mean, 95% CI) and, for mixed models abd Nakagawa’s marginal/conditional R²
+```{r} 
+fits <- list(
+  toldall      = fit_report_all,       
+  toldformal   = fit_report_formal,    
+  toldinformal = fit_report_informal   
+)
+
+# summarize Bayesian R2 
+bayes_R2_summary <- function(fit, probs = c(.025, .5, .975), seed = 123) {
+  set.seed(seed) 
+  r2_draws <- bayes_R2(fit)
+  tibble(
+    bayes_R2_mean = mean(r2_draws),
+    bayes_R2_med  = median(r2_draws),
+    bayes_R2_ll   = quantile(r2_draws, probs[1]),
+    bayes_R2_ul   = quantile(r2_draws, probs[3])
+  )
+}
+
+r2 <- map_dfr(names(fits), function(nm){
+  f <- fits[[nm]]
+  nak <- performance::r2_nakagawa(f) 
+  bay <- bayes_R2_summary(f)            
+  tibble(
+    outcome         = nm,
+    bayes_R2_mean   = bay$bayes_R2_mean,
+    bayes_R2_ll     = bay$bayes_R2_ll,
+    bayes_R2_ul     = bay$bayes_R2_ul,
+    r2_marginal     = nak$R2_marginal,
+    r2_conditional  = nak$R2_conditional
+  )
+}) %>%
+  mutate(
+    across(where(is.numeric), ~ round(., 3)),
+    outcome = dplyr::recode(outcome,
+      toldall      = "Any channels",
+      toldformal   = "Formal channels",
+      toldinformal = "Informal channels"
+    )
+  )
+
+kable(r2, digits = 3, 
+      booktabs = TRUE,
+      col.names = c("Outcome", "Bayesian R²", "Lower", "Upper", 
+                     "Marginal R²", "Conditional R²")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+```{r}
+#| label: tbl-formal-channels
+#| tbl-cap: "Formal disclosure channels (posterior means with 95% credible intervals)"
+
+formal_models <- list(
+  police = fit_report_police,
+  helpline = fit_report_helpline,
+  sworker = fit_report_sworker,
+  teacher = fit_report_teacher
+)
+
+summarise_draws_pop(formal_models, facet_labels, report_names) %>%
+  kable(booktabs = TRUE, align = c("l", rep("r", 4))) %>%
+    kable_styling(latex_options = c("striped", "hold_position"), font_size = 9)
+```
+ 
+```{r}
+#| label: tbl-family-channels
+#| tbl-cap: "Informal disclosure channels (posterior means with 95% credible intervals)"
+
+informal_models <- list(
+  mother = fit_report_mother,
+  father = fit_report_father,
+  sibling = fit_report_sibling,
+  friend = fit_report_friend,
+  othera = fit_report_othera
+)
+
+summarise_draws_pop(informal_models, facet_labels, report_names) %>%
+  kable(booktabs = TRUE, align = c("l", rep("r", 3))) %>%
+  kable_styling(latex_options = c("striped", "hold_position"), font_size = 9)
+```
+
+### Events-per-variable (EPV) (channel specific)
+We first evaluated statistical power for each channel using events-per-variable (EPV) criteria. We excluded one channel (other: n=19, 0.9%, EPV = 2.1) from regression analysis due to insufficient events. Three formal channels (police: n = 59, helpline: n = 63, social worker: n = 58; EPV = 6.4 to 7.0) have limited power and should be interpreted as exploratory findings. All other channels met conventional power thresholds (EPV>10).
+
+```{r}
+#| label: tbl-epv
+#| tbl-cap: Channel-specific sample sizes and events per variable (EPV)
+
+# channels used in EPV table 
+channels <- intersect(names(d_report), names(channel_labels))
+
+# build epv table
+epv_balance <- d_report %>%
+  select(any_of(channels)) %>%
+  mutate(across(everything(), ~ suppressWarnings(as.logical(.)))) %>%
+  summarise(
+    across(
+      everything(),
+      list(
+        yes = ~ sum(. == TRUE,  na.rm = TRUE),
+        no  = ~ sum(. == FALSE, na.rm = TRUE)
+      ),
+      .names = "{.col}.{.fn}"
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to  = c("channel", ".value"),
+    names_sep = "\\."
+  ) %>%
+  rename(
+    n_yes = yes,
+    n_no  = no
+  ) %>%
+  mutate(
+    n_total        = n_yes + n_no,
+    prop_yes       = ifelse(n_total > 0, n_yes / n_total, NA_real_),
+    `Prevalence (%)` = round(100 * prop_yes, 1),
+    EPV            = round(n_yes / 9, 1),  # 9 predictors
+    sufficient     = n_yes >= 30 & prop_yes >= 0.01,
+    status = case_when(
+      n_yes < 10      ~ "Very sparse (<10 events)",
+      n_yes < 30      ~ "Sparse (10–30 events)",
+      prop_yes < 0.01 ~ "Rare (<1%)",
+      TRUE            ~ "Adequate"
+    ),
+    analysis_type = case_when(
+      !sufficient ~ "Descriptive only",
+      n_yes < 100 ~ "Regression (exploratory)",
+      TRUE        ~ "Regression"
+    )
+  ) %>%
+  arrange(desc(prop_yes))
+
+exclude_channels <- epv_balance %>%
+  filter(!sufficient) %>%
+  pull(channel)
+```
+
+```{r}
+
+epv_balance %>%
+  transmute(
+    Channel       = dplyr::recode(channel, !!!channel_labels),
+    `N disclosed` = n_yes,
+    `N total`     = n_total,
+    `Prevalence (%)`,
+    EPV,
+    status,
+    Analysis      = analysis_type
+  ) %>%
+  knitr::kable(
+    caption = "Disclosure balance by channel"
+  )
+```
+Now we compute odds ratios for each channel
+```{r}
+or_results <- {
+  rl <- lapply(names(all_models), function(ch) {
+    fit <- all_models[[ch]]
+    posterior_summary(fit, variable = predictors_set) %>%
+      as.data.frame() %>%
+      tibble::rownames_to_column("parameter") %>%
+      mutate(channel = ch)
+  })
+  bind_rows(rl) %>%
+    mutate(
+      Predictors = dplyr::recode(parameter, !!!predictor_map),
+      OR     = exp(Estimate),
+      OR_lwr = exp(Q2.5),
+      OR_upr = exp(Q97.5),
+      sig    = (Q2.5 > 0 & Q97.5 > 0) | (Q2.5 < 0 & Q97.5 < 0),
+      cell   = dplyr::case_when(
+        !sig ~ sprintf("%.2f (%.2f–%.2f)", OR, OR_lwr, OR_upr),
+        OR >= 1.5 | OR <= 0.67 ~ sprintf("**%.2f (%.2f–%.2f)†**", OR, OR_lwr, OR_upr),
+        TRUE ~ sprintf("**%.2f (%.2f–%.2f)**", OR, OR_lwr, OR_upr)
+      )
+    )
+}
+
+# Wide table
+coef_table <- or_results  %>%
+  select(channel, Predictors, cell) %>%
+  pivot_wider(names_from = channel, values_from = cell) %>%
+  rename_with(~ ifelse(.x %in% names(channel_labels), channel_labels[.x], .x), everything())
+```
+
+## Forest plot
+```{r}
+#| label: fig-forest-prep
+#| fig-width: 12
+#| fig-height: 10
+
+# data for forest plot
+forest_df <- or_results %>%
+  filter(Predictors != "Intercept") %>%
+  left_join(
+    epv_balance %>% select(channel, n_yes, EPV), 
+    by = "channel"
+  ) %>%
+  mutate(
+    exploratory = n_yes < 100,
+    channel_group = case_when(
+      channel %in% c("toldall", "toldformal", "toldinformal") ~ "1_Composite",
+      channel %in% c("police", "helpline", "sworker", "teacher") ~ "2_Formal",
+      channel %in% c("mother", "father", "sibling") ~ "3_Family",
+      channel == "friend" ~ "4_Peer",
+      TRUE ~ "5_Other"
+    ),
+    channel_label = case_when(
+      channel == "toldall" ~ "Any channel",
+      channel == "toldformal" ~ "Formal (composite)",
+      channel == "toldinformal" ~ "Informal (composite)",
+      channel %in% names(channel_labels) ~ channel_labels[channel],
+      TRUE ~ channel
+    ),
+    Predictors = factor(
+      Predictors, 
+      levels = c(
+        "Girls (vs Boys)",
+        "Age (per year)",
+        "Premarital sex",
+        "Inequitable attitudes towards sex",
+        "Enabling parental mediation",
+        "Sex education",
+        "Help-seeking",
+        "Digital skills to report"
+      )
+    )
+  ) %>%
+  group_by(Predictors) %>%
+  mutate(channel_label = fct_reorder(channel_label, OR, .desc = FALSE)) %>%
+  ungroup()
+```
+
+```{r}
+#| label: fig-forest-channels
+#| fig-cap: "Predictors of disclosure across channels (forest plot)"
+#| fig-width: 12
+#| fig-height: 10
+
+# forest plot
+forest_plot <- ggplot(forest_df, aes(x = OR, y = channel_label)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey40", linewidth = 0.4) +
+  geom_errorbarh(
+    aes(xmin = OR_lwr, xmax = OR_upr, color = sig, alpha = exploratory),
+    height = 0.3, 
+    linewidth = 0.6
+  ) +
+  geom_point(aes(color = sig, alpha = exploratory), size = 2.5) +
+  facet_wrap(~ Predictors, scales = "free_x", ncol = 3) +
+  scale_color_manual(
+    values = c(`TRUE` = "#E74C3C", `FALSE` = "grey60"),
+    labels = c(`TRUE` = "95% CI excludes 1", `FALSE` = "95% CI includes 1"),
+    name = NULL
+  ) +
+  scale_alpha_manual(
+    values = c(`TRUE` = 0.6, `FALSE` = 1.0),
+    breaks = c(TRUE, FALSE),
+    labels = c(`TRUE` = "Exploratory (n<100)", `FALSE` = "Adequate power"),
+    na.value = 1.0, 
+    name = NULL
+  ) +
+  scale_x_continuous(
+    trans = "log10", 
+    breaks = c(0.5, 0.75, 1, 1.5, 2, 3, 4),
+    labels = c("0.5", "0.75", "1.0", "1.5", "2.0", "3.0", "4.0")
+  ) +
+  labs(
+    x = "Odds Ratio (log scale)", 
+    y = NULL,
+    title = "Predictors of Disclosure Across Channels"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.key.width = unit(1.5, "cm"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.border = element_rect(fill = NA, color = "grey80", linewidth = 0.3),
+    strip.text = element_text(face = "bold", size = 10),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    axis.text.y = element_text(size = 9),
+    axis.text.x = element_text(size = 8),
+    plot.title = element_text(face = "bold", size = 13, hjust = 0.5),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+forest_plot
+
+ggsave(
+  "forest_channels.png", 
+  forest_plot,
+  width = 12, 
+  height = 10, 
+  dpi = 300,
+  bg = "white"
+)
+```
+
+## Combined Table (All Channels Odds Ratios)
+
+```{r}
+#| label: tbl-all-channels
+#| tbl-cap: "Predictors of disclosure across all channels (odds ratios with 95% CIs)"
+
+coef_table_all <- or_results %>%
+  mutate(
+    channel_clean = case_when(
+      channel == "toldall"      ~ "Any",
+      channel == "toldformal"   ~ "Formal",
+      channel == "toldinformal" ~ "Informal",
+      channel %in% names(channel_labels) ~ channel_labels[channel],
+      TRUE ~ channel
+    )
+  ) %>%
+  select(channel_clean, Predictors, cell) %>%
+  pivot_wider(
+    names_from  = channel_clean,
+    values_from = cell
+  ) %>%
+  select(
+    Predictors,
+    Any, Formal, Informal,                      # composite
+    Police, Helpline, `Social Worker`, Teacher, # formal channels
+    Mother, Father, Sibling, Friend, `Other Adult` # informal channels
+  )
+
+kable(
+  coef_table_all,
+  booktabs = TRUE,
+  escape   = FALSE,
+  align    = c("l", rep("r", 12))
+) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    font_size     = 6,
+    full_width    = TRUE
+  ) %>%
+  add_header_above(
+    c(" " = 1, "Composite" = 3, "Formal" = 4, "Informal" = 5)
+  ) %>%
+  footnote(
+    general = c(
+      "**Bold** indicates 95% CI excludes 1.0; † indicates substantive effect (OR ≥ 1.5 or ≤ 0.67)",
+      "Police, Helpline, and Social Worker have limited sample sizes (EPV < 10)."
+    ),
+    general_title      = "Note:",
+    footnote_as_chunk  = TRUE
+  )
+```
+
+## Correlations between predictors 
+```{r} 
+# plot weighted correlations for predictors
+predictor_corr <- function(data, rhs, w = NULL,
+                           tl_cex = 0.9, num_cex = 0.95, digits = 2,
+                           clean_labels = NULL) {
+  
+  X <- model.matrix(as.formula(rhs), data = data)[, -1, drop = FALSE]
+  X <- X[, apply(X, 2, function(z) sd(z, na.rm = TRUE) > 0), drop = FALSE]
+  
+  # rename columns again
+  if (!is.null(clean_labels)) {
+    for (nm in names(clean_labels)) {
+      if (nm %in% colnames(X)) {
+        colnames(X)[colnames(X) == nm] <- clean_labels[[nm]]
+      }
+    }
+  }
+  
+  w <- if (is.null(w)) rep(1, nrow(X)) else w
+  w <- ifelse(is.finite(w) & w > 0, w, 1)
+  
+  ok <- complete.cases(X)
+  X  <- X[ok, , drop = FALSE]
+  w  <- w[ok]
+  
+  Xs <- scale(X, center = TRUE, scale = TRUE)
+  Xw <- sweep(Xs, 1, sqrt(w), `*`)
+  M  <- cov2cor(crossprod(Xw) / sum(w))
+  
+  col_div <- colorRampPalette(c("#1b6ca8", "#f7f7f7", "#b22222"))(240)
+  op <- par(mar = c(1.2, 1.2, 1.2, 1.2))
+  on.exit(par(op), add = TRUE)
+  
+  corrplot(
+    M,
+    method        = "color",
+    type          = "upper",
+    tl.col        = "black",
+    tl.cex        = tl_cex,
+    tl.srt        = 45,
+    cl.cex        = 0.9,
+    cl.align      = "c",
+    cl.ratio      = 0.15,
+    col           = col_div,
+    addgrid.col   = "white",
+    number.cex    = num_cex,
+    number.digits = digits,
+    addCoef.col   = "black",
+    diag          = FALSE,
+    outline       = TRUE
+  )
+  
+  invisible(M)
+}
+```
+
+```{r}
+# predictor correlations
+rhs <- "~ sex + age + presex + nindex + parentmediate + sexed + helpseeking + digitalskills"
+corr_preds <- predictor_corr(d_report, rhs, w = d_report$wgt_scaled, clean_labels = clean_labels)
+
+# save 
+png("figure_corr.pdf", 
+    width = 6, 
+    height = 4, 
+    units = "in", 
+    res = 300
+    )
+
+corr_preds <- predictor_corr(
+  d_report, 
+  rhs, 
+  w = d_report$wgt_scaled, 
+  clean_labels = clean_labels
+)
+dev.off()
+```
+
+
+## (4) Random slopes sensitivity analysis (exploratory, not pre-registered)
+```{r}
+# age
+fit_report_all_age <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + age | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,         
+  cores  = 4,         
+  iter   = 2000,     
+  warmup = 1000,       
+  threads = threading(2), 
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-age-cmd"
+)
+
+# gender
+fit_report_all_sex <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + sex | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,         
+  cores  = 4,          
+  iter   = 2000,       
+  warmup = 1000,       
+  threads = threading(2),  
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-sex-cmd"
+)
+
+# premartial sex
+fit_report_all_presex <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + presex | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,         
+  cores  = 4,          
+  iter   = 2000,       
+  warmup = 1000,       
+  threads = threading(2),  
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-presex-cmd"
+)
+
+# inequitable gender attitudes
+fit_report_all_nindex <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + nindex | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,          
+  cores  = 4,          
+  iter   = 2000,      
+  warmup = 1000,       
+  threads = threading(2),  
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-nindex -cmd"
+)
+
+# parentmediate
+fit_report_all_parentmediate <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 +  parentmediate | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,         
+  cores  = 4,         
+  iter   = 2000,       
+  warmup = 1000,      
+  threads = threading(2), 
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-parentmediate-cmd"
+)
+
+# sex education
+fit_report_all_sexed <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + sexed | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,        
+  cores  = 4,         
+  iter   = 2000,      
+  warmup = 1000,      
+  threads = threading(2),  
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-sexed-cmd"
+)
+
+# helpseeking
+fit_report_all_helpseeking <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + helpseeking | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,          
+  cores  = 4,         
+  iter   = 2000,       
+  warmup = 1000,       
+  threads = threading(2),  
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-helpseeking-cmd"
+)
+
+# digital skills
+fit_report_all_digitalskills <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex +
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + digitalskills | COUNTRY),
+  data   = d_report,
+  family = bernoulli(),
+  backend = "cmdstanr",
+  chains = 4,          
+  cores  = 4,         
+  iter   = 2000,       
+  warmup = 1000,      
+  threads = threading(2),  
+  control = list(adapt_delta = 0.99),
+  seed = 123,
+  file = "models/brm-disclosure-all-digitalskills-cmd"
+)
+```
+
+### LOO disclosure models
+Now we estimate a model's predictive accuracy from out-of-sample data using Pareto Smoothed Importance Sampling (PSIS-LOO)
+```{r}
+# loo 
+loo_all_complete <-  loo(fit_report_all)
+loo_age           <- loo(fit_report_all_age)
+loo_sex           <- loo(fit_report_all_sex)
+loo_presex        <- loo(fit_report_all_presex)
+loo_nindex        <- loo(fit_report_all_nindex)
+loo_parentmediate <- loo(fit_report_all_parentmediate)
+loo_sexed         <- loo(fit_report_all_sexed)
+loo_helpseeking   <- loo(fit_report_all_helpseeking)
+loo_digitalskills <- loo(fit_report_all_digitalskills)
+
+# loo compare 
+loo_disclosuremodels <- loo::loo_compare(
+  loo_all_complete,
+  loo_age,
+  loo_sex,
+  loo_presex,
+  loo_nindex,
+  loo_parentmediate,
+  loo_sexed,
+  loo_helpseeking,
+  loo_digitalskills
+)
+
+# relabel
+loo_models <- list(
+  "Full model (RI)"                        = loo_all_complete,
+  "Age (random slope)"                     = loo_age,
+  "Gender (random slope)"                  = loo_sex,
+  "Premarital sex (random slope)"          = loo_presex,
+  "Inequitable attitudes (random slope)"   = loo_nindex,
+  "Parental mediation (random slope)"      = loo_parentmediate,
+  "Sex education (random slope)"           = loo_sexed,
+  "Help-seeking (random slope)"            = loo_helpseeking,
+  "Digital skills (random slope)"          = loo_digitalskills
+)
+```
+
+## Pareto-k summary for each model
+We check PSIS-LOO diagnostics across several fitted models. The Pareto-k values flag whether the LOO approximation is reliable for each observation
+```{r}
+# pareto summary 
+pk_summary <- function(x, label) {
+  k <- pareto_k_values(x)
+  
+  data.frame(
+    Model      = label,
+    `max k`    = round(max(k), 2),
+    `n > 0.7`  = sum(k > 0.7),
+    check.names = FALSE
+  )
+}
+
+paret_disclosure <- map_dfr(
+  names(loo_models),
+  ~ pk_summary(loo_models[[.x]], .x)
+)
+
+knitr::kable(
+  paret_disclosure,
+  caption = "PSIS-LOO Pareto-k diagnostics (k < 0.7 acceptable).",
+  align   = "lrr"
+)
+```
+
+## Plot LOO disclosure models
+Finally, we plot ΔELPD with standard-error bars
+```{r}
+
+# loo comparison data
+disclosurel_df <- as.data.frame(loo_disclosuremodels) %>%
+  rownames_to_column("Model_raw") %>%
+  transmute(
+    Model_clean = str_replace_all(
+      str_remove_all(Model_raw, "^loo\\(|\\)$"),
+      "^x=",
+      ""
+    ),
+    elpd_diff,
+    se_diff
+  )
+
+#better labels
+idx <- match(disclosurel_df$Model_clean, names(loo_models))
+disclosurel_df$Model <- ifelse(
+  is.na(idx),
+  disclosurel_df$Model_clean,
+  loo_models[idx]
+)
+
+# identify best model
+best_model <- disclosurel_df %>%
+  filter(elpd_diff == 0) %>%
+  pull(Model)
+
+# plot elpd with se bars
+loo_disclosure <- ggplot(
+  disclosurel_df,
+  aes(x = reorder(Model, elpd_diff), y = elpd_diff)
+) +
+  geom_hline(
+    yintercept = 0,
+    linetype   = "dashed",
+    color      = "grey60",
+    linewidth  = 0.3
+  ) +
+  geom_errorbar(
+    aes(ymin = elpd_diff - se_diff, ymax = elpd_diff + se_diff),
+    width     = 0.2,
+    linewidth = 0.5,
+    color     = "grey40"
+  ) +
+  geom_point(
+    size  = 4.5,
+    shape = 21,
+    fill  = "white",
+    color = "white"
+  ) +
+  geom_point(
+    aes(fill = Model == best_model),
+    size  = 3.5,
+    shape = 21,
+    color = "black",
+    stroke = 0.5
+  ) +
+  geom_label(
+    aes(label = sprintf("%.1f", elpd_diff)),
+    hjust         = -0.3,
+    size          = 2.5,
+    label.padding = unit(0.15, "lines"),
+    label.size    = 0,
+    fill          = "white",
+    color         = "grey20"
+  ) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = expression(Delta * ELPD[LOO])
+  ) +
+  scale_fill_manual(
+    values = c("TRUE" = "firebrick", "FALSE" = "grey70"),
+    guide  = "none"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.margin       = margin(5, 25, 5, 5),
+    panel.grid.minor  = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+loo_disclosure
+
+ggsave(
+  "figure_loo.png",
+  loo_disclosure,
+  width  = 6,
+  height = 4,
+  dpi    = 300
+)
+```
+
+## LOO disclosure models (table)
+```{r}
+loo_output <- disclosurel_df  %>%
+  select(Model, elpd_diff, se_diff)
+
+loo_tabdisclose <- loo_output %>%
+  knitr::kable(
+    digits = 2,
+    col.names = c("Model", "ΔELPD", "SE"),
+    caption = "."
+  ) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+loo_tabdisclose
+```

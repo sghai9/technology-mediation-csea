@@ -1,0 +1,2540 @@
+---
+title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
+authors: Ghai et al.
+subtitle: Prevelence estimation and cleaning script
+format: 
+  typst:
+    toc: true
+    toc-depth: 2
+  pdf:
+    toc: true
+    toc-depth: 2
+    echo: false
+    number-sections: true
+    fig_caption: true
+    fig_height: 12
+    fig_width: 8
+    latex_engine: xelatex
+    fontsize: 10pt
+    mainfont: "Times New Roman"
+    header-includes:
+      - \usepackage{pdflscape}     
+      - \usepackage{geometry}
+      - \usepackage{graphicx}      
+      - \geometry{margin=1in}     
+      - \usepackage{longtable} 
+      - \usepackage{adjustbox}
+  html:
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    number_sections: true
+    fig_caption: true
+    css: assets/styles.css
+    highlight: "pygments"
+---
+
+# Preface
+In this script, we subset data from the Disrupting Harm main data set and perform basic cleaning functions, including a) adjusting the sample size using the 'wgt_scaled' weights b) extracting relevant variables from the subset data and renaming for clarity c) recoding our binary variables of interest for further analysis. We then compute weighted descriptive summaries (e.g., prevalence of technology-facilitated CSEA by gender, age, and country), and generate key visualisations including Figure 1, Extended Fig. 1 reported in the manuscript and other heat plots to examine descriptive patterns.
+```{r}
+#| label: document-options
+#| include: false
+
+knitr::opts_chunk$set(
+  cache = TRUE,
+  echo = TRUE
+)
+```
+
+# Libraries
+```{r, message=FALSE}
+# Load packages 
+library(here)
+library(gtsummary)
+library(dplyr)
+library(tidyverse)
+library(DataExplorer)
+library(survey)
+library(janitor)
+library(rnaturalearth)
+library(sf)
+library(grid)
+library(gridExtra)
+library(png)
+library(gridGraphics)
+library(ggrepel)
+library(officer)
+library(flextable)
+library(patchwork)
+library(kableExtra)
+library(colorspace)
+library(readxl)
+library(stringr)
+library(readr)
+library(scales)
+library(glue)
+library(ggtext)
+library(srvyr)
+library(gt)
+library(cowplot)
+library(grid)
+library(emmeans)
+```
+
+This data is a nationally representative household survey collected by UNICEF with ~1,000 children and ~1,000 of their parents and caregivers across 12 countries in Eastern and Southern Africa (incl. Ethiopia and Mozambique) and Southeast Asia (incl. Cambodia and Vietnam). The study was conducted by UNICEF Office of Research, ECPAT International, and INTERPOL and Ipsos Mori collected data using a combination of face-to-face household interviews and online interviews. The Disrupting Harm dataset includes dichotomous and free-response variables that measure both child and parent outcomes. We will look at only child-level data to understand the extent of reporting technology-facilitated child sexual exploitation and abuse (CSEA) by children. Data was obtained under a data-sharing agreement and is not publicly available due to confidentiality and senstive nature of the dataset. 
+```{r raw load, echo = FALSE}
+raw_df <- read.csv("data-raw/DH_12Countries_110222.csv")
+
+```
+
+# Data Preprocessing
+
+We select relevant variables following our pre-registeration: In order to ensure we don't miss out on any nested questions/sub-questions, we include all variables that include technology-facilitated CSEA related questions plus our set of independent variables: macro (gender norms/cultural), meso (interpersonal/family), micro (individual) and protective factors). We also select additional variables of interest: platforms, place etc to perform further descriptive analysis. 
+```{r subset data_1}
+subset_dh <- raw_df %>%
+  select(
+    # Participant ID
+    contains("Respondent_ID"),
+    # Country
+    ends_with("COUNTRY"),
+    # Age
+    ends_with("ECS_SELECTED_CH_AGE"),
+    # Sex
+    ends_with("ECS_SELECTED_CH_GENDER"),
+    # Having sex before marriage is acceptable?
+    ends_with("I7a"),
+    # Only men, not women, should decide when to have sex
+    ends_with("I7b"),
+    # If someone insults a man, he should defend his reputation with force
+    ends_with("I7c"),
+    # A woman should tolerate violence to keep her family together
+    ends_with("I7f"),
+    # Do you know where to get help if you/friend experience assault
+    ends_with("G17"),
+    # digital skills (one-item only)
+    ends_with("D1f"),
+    #  There are people in my family who care about me
+     ends_with("I1a"),
+    # If I have a problem, people in my family will help me
+      ends_with("I1b"),
+    # We have a good time together in my family
+      ends_with("I1c"),
+    #  I feel safe at home
+      ends_with("I1d"),
+    # My parents/carers/guardians listen to me and take what I say into account
+      ends_with("I1e"),
+    # My parents/carers/guardians and I make decisions about my life together
+      ends_with("I1f"),
+    # Classification of local area/neighborhood
+    contains("A1"),
+    # sex education: Have you received any sex education
+    ends_with("AII_A16"),
+    # Did this sex education cover any of the following topics?
+    ends_with("AII_A17f"),
+    # Parental mediation items
+    starts_with("E1"),
+    #  G_8: And on which platform(s) or website(s) did this happen? 
+    # G8_1: And on which platform(s) or website(s) did this happen?
+    starts_with("G8"),
+    # The last time this happened, what did you do?
+    starts_with("G3_1"),
+    # Perpetrator Identity: 
+    # Thinking now about the last time this happened, as far as you know, 
+    # who was the person or people who did this?
+    starts_with("G10"),
+    # Disclosure: Who did you tell
+    starts_with("G13"),
+    # Barriers to disclosure: Why didn't you report?
+    starts_with("G14"),
+    # Someone made sexual comments about me
+    ends_with("G1a"),
+    #  Someone sent me sexual images I did not want
+    ends_with("G1c"),
+    # Asked to talk about sex/sexual acts with someone
+    ends_with("G3b"),
+    #  Asked by someone to do something sexual
+    ends_with("G3c"),
+    #  Asked for a photo or video showing my private parts
+    ends_with("G3d"),
+    #  Offered me money or gifts in return for sexual images/videos
+    ends_with("G4a"),
+    # Someone offered me money/gifts to meet them in person to do something
+    ends_with("G4b"),
+    #  Someone shared sexual images of me without my consent
+    ends_with("G4c"),
+    #  Someone threatened or blackmailed me to engage in sexual activities
+    ends_with("G4d"),
+    # Load weights
+    contains("wgt_")
+    )
+```
+
+# Total Participants Count
+
+```{r observations}
+print(paste0("Number of Observations: ", nrow(subset_dh)))
+```
+
+## Duplicates
+
+We now examine whether there are duplicate IDs. Upon inspection, 24 ID numbers are duplicates. However, ECS_AddressID, start date and remaining column responses don't seem identical. It appears that the same respondent_ID was used to mark two respondents but these responses appear to be unique (that we confirmed). 
+```{r duplicates,  results="hide"}
+# 1. Examine duplicate IDs
+duplicate_ids <- subset_dh %>%
+  filter(duplicated(Respondent_ID) | duplicated(Respondent_ID, fromLast = TRUE))
+
+# 2. Inspect duplicates
+inspect_dup <- subset_dh %>%
+  filter(Respondent_ID == "725305")
+
+# 3. Select all duplicate ID
+duplicates_df <- subset_dh %>%
+  filter(Respondent_ID %in% duplicate_ids$Respondent_ID) %>%
+  group_by(Respondent_ID)
+```
+
+## Missings/Weights 
+
+Before proceeding with data wrangling, we examine the dataset to assess the extent and structure of missing observations. Given the nested, multiple-response format of the survey combined with the sensitivity of the topic, many variables contain NA values. However, it's important to note that not all NAs represent true missing data. In many cases, an NA simply reflects that a respondent did not select a particular option (e.g., in multi-select disclosure questions), rather than a failure to respond.
+```{r missings}
+#| eval: false
+
+# Browsing columns/rows
+introduce(subset_dh)
+plot_intro(subset_dh)
+
+# (NA in almost every row)
+plot_missing(subset_dh)
+str(subset_dh)
+```
+
+### Weights
+To address variations in fieldwork coverage specifically, differences in the number of surveys collected across countries—survey weights were calculated by Ipsos MORI. These weights were applied to ensure that each country-level sample accurately reflects the national population of internet-using children, making the data representative at the national level. The weighting procedure followed a three-stage process. First, design weights were calculated to adjust for unequal probabilities of selection arising from the sampling design. Second, non-response weights were applied to correct for potential biases introduced by differential response rates across subgroups. Finally, post-stratification weights aligned the sample distribution with known population parameters for the internet-using child population in each country.For all analyses presented in this study, we used the variable wgt_scaled, which represents the final weight rescaled to have a mean of 1 within each country. To verify that the weights were correctly applied, we computed the total weighted sample size per country and confirmed that the mean of the wgt_scaled variable within each country equaled 1.
+```{r weights}
+country_weighted <- subset_dh %>%
+  group_by(COUNTRY) %>%
+  summarise(country_wgt = round(sum(wgt_scaled, na.rm = TRUE)))
+country_weighted # total sample size to perform all descriptives analysis on
+
+
+# Double-check mean weights by country should be 1
+mean_wgt <- subset_dh %>%
+  group_by(COUNTRY) %>%
+  summarize(mean_wgt = mean(wgt_scaled, na.rm = TRUE))
+```
+
+### Weighted Sample Size
+
+To ensure that all analyses reflect the intended weighting scheme, we first remove cases with missing values on the wgt_scaled variable. This step ensures consistency between the analytic sample and the application of scaled survey weights. By excluding rows with missing weights, we align the sample more accurately with the population of digitally connected children. After this adjustment, the final weighted analytic sample includes 11,912 children.
+
+```{r sample size,  results="hide"}
+df_wgt <- subset_dh %>%
+  drop_na("wgt_scaled")
+```
+
+### Unique IDs
+
+Next we create a new unique ID variable due to 24 duplicate respondent IDs in the raw dataset
+```{r ID data}
+df_wgt$CBU_ID <- seq_len(nrow(df_wgt))
+```
+
+
+# Renaming/Recoding Variables for Analyses
+
+We begin by renaming and recoding all variables relevant to our descriptive, inferential, and exploratory analyses. In addition to our preregistered variables, we also clean and retain several exploratory variables that were not included in the preregistration but may offer meaningful insights (e.g., platforms used etc.).
+
+**Naming convention**: The Disrupting Harm dataset includes nine distinct types of technology-facilitated CSEA, as defined in the official codebook (Disrupting Harm Survey_CLEAN Codebook: G – OCSEA (CASI) V2). Each question related to CSEA is nested under one of these nine categories.To manage this nested structure efficiently, we relabeled each of the nine CSEA categories using a simplified naming convention: abuse_a through abuse_i, corresponding to each unique form of technology-facilitated CSEA. For clarity and consistency, all related variables have been renamed to explicitly reflect: A) The specific CSEA category (abuse_a, abuse_b, etc.), and B) the type of question (e.g., experience, disclosure, perpetrator). This will be crucial for pivoting the dataset for our inferential analysis later on. Importantly, multiple responses were possible across different types of CSEA, and this multi-response structure has been preserved in the renaming process.
+
+## Inferential Analysis Variables
+```{r renaming}
+df_wgt <- df_wgt %>%
+  dplyr::rename(
+    age = ECS_SELECTED_CH_AGE,
+    # Sex
+    sex = ECS_SELECTED_CH_GENDER,
+    # Classification of local area/neighborhood
+    urbanrural = A1,
+    # Having sex before marriage is acceptable?
+    presex = I7a,
+    # Only men, not women, should decide when to have sex?
+    mendecide = I7b,
+    # If someone insults a boy/man, he should defend his
+    # reputation with force if he needs to?
+    malerep = I7c,
+    # A woman should tolerate violence to keep her family together?
+    violence = I7f,
+    # Do you know where to get help if you or a friend experience sexual assault
+    helpseeking = G17,
+    # Think about how you use the internet.
+    # How true are these things for you?  - report harmful content
+    digitalskills = D1f,
+    # Have you received any sex education?
+    sexed = AII_A16,
+    # Did it cover any of the following topics? assertive
+    assertive = AII_A17f,
+    #  how often does your parent/carer/guardian do any of these things?
+    # Encourages me to explore and learn things on the internet
+    pm_learn = E1a,
+    # Suggests ways to use the internet safely
+    pm_safety = E1b,
+    # Does shared activities together with me on the internet
+    pm_shared = E1c,
+    # Helps me when something is difficult to do or find on the internet
+    pm_difficult = E1d,
+    # Helps me when something bothers me on the internet
+    pm_bothers = E1e,
+    #  There are people in my family who care about me
+    abuse_a = G1a,
+     #abuse_a = "Someone made unwanted sexual comments about me"
+    abuse_b = G1c,
+    #abuse_b = "Someone sent me sexual images I did not want"
+    abuse_c = G3b,
+     #abuse_c = "Been asked to talk about sex/sexual acts with someone"
+    abuse_d = G3c,
+    #abuse_d = "Been asked by someone to do something sexual"
+    abuse_e = G3d,
+    #abuse_e = "Been asked for a photo/video showing my private parts"
+    abuse_f = G4a,
+    #abuse_f = "Someone offered me money/gifts in return for sexual images/videos"
+    abuse_g = G4b,
+     #abuse_g = "Someone offered me money/gifts to meet them in person to do something sexual"
+    abuse_h = G4c,
+    #abuse_h = "Someone shared sexual images of me without my consent"
+    abuse_i = G4d,
+    #abuse_i = "Someone threatened/blackmailed me to engage in sexual activities"
+    )
+```
+
+## Descriptive Analysis Variables
+
+### Reporting/disclosing of Technology-facilitated CSEA 
+To examine whether children disclosed their experiences of technology-facilitated CSEA, they were asked: “Who did you tell about what happened?” Respondents could select from a list of multiple response options, including various individuals (e.g., family members, friends), educators, social workers, helplines and law enforcement authorities. Children could also indicate that they had not disclosed the experience to anyone, were unsure whether they had, or preferred not to answer.
+```{r renaming 2-1, results="hide"}
+# Who did you tell?
+df_wgt <- df_wgt %>%
+  rename_with(
+    # I didn`t tell anyone about it
+    ~ str_replace(., "G13_1_G", "toldnoone_") %>%
+      # Father, step/foster father, or male caregiver/guardian
+      str_replace(., "G13_2_G", "father_") %>%
+      # Mother, step/foster mother, or female caregiver/guardian
+      str_replace(., "G13_3_G", "mother_") %>%
+      # Brother or sister
+      str_replace(., "G13_4_G", "sibling_") %>%
+      # Friend
+      str_replace(., "G13_5_G", "friend_") %>%
+      # Teacher or educator
+      str_replace(., "G13_6_G", "teacher_") %>%
+      # Other adult I know and trust
+      str_replace(., "G13_7_G", "othera_") %>%
+      # Social worker
+      str_replace(., "G13_8_G", "sworker_") %>%
+      # Helpline
+      str_replace(., "G13_9_G", "helpline_") %>%
+      # Police
+      str_replace(., "G13_10_G", "police_") %>%
+      # Other
+      str_replace(., "G13_11_G", "other_") %>%
+      # Other open-ended
+      str_replace(., "G13_other_G", "otheropen_") %>%
+      # Don't know
+      str_replace(., "G13_999_G", "rdontknow_") %>%
+      # Prefer not to say
+      str_replace(., "G13_888_G", "rprefer_") %>%
+      # abuse_a to abuse_i
+      str_replace(., "1a", "a") %>%
+      str_replace(., "1c", "b") %>%
+      str_replace(., "3b", "c") %>%
+      str_replace(., "3c", "d") %>%
+      str_replace(., "3d", "e") %>%
+      str_replace(., "4a", "f") %>%
+      str_replace(., "4b", "g") %>%
+      str_replace(., "4c", "h") %>%
+      str_replace(., "4d", "i"),
+    starts_with("G13")
+  )
+```
+
+### Perpetrator Identity 
+To identify the perpetrator, children were asked: “Thinking now about the last time this happened, as far as you know, who was the person or people who did this?” They could select from multiple response options, including: a family member, a former romantic partner, a friend, someone they knew under or over the age of 18, a person they did not know prior to the incident, or someone else. Children also had the option to indicate that they did not know who the person was or that they preferred not to answer.
+```{r renaming 2-2, results="hide"}
+# Last time who did this?
+df_wgt <- df_wgt %>%
+  rename_with(
+    # Someone in my family
+    ~ str_replace(., "G10_1_G", "known_") %>%
+      # A romantic partner/ex
+      str_replace(., "G10_2_G", "knownr_") %>%
+      # A friend or someone else I knew who is > 18 years
+      str_replace(., "G10_3_G", "knowno_") %>%
+      # A friend or someone else I knew who is < 18 years old
+      str_replace(., "G10_4_G", "knowno2_") %>%
+      # Someone I didn`t know before this happened
+      str_replace(., "G10_5_G", "unknown_") %>%
+      # Someone else
+      str_replace(., "G10_6_G", "unknown2_") %>%
+      # I don`t know who the person was
+      str_replace(., "G10_999_G", "unknown3_") %>%
+      # other
+      str_replace(., "G10_other_G", "perpother_") %>%
+      # prefer not to say
+      str_replace(., "G10_888_G", "perpnotsay_") %>%
+      # abuse_a to abuse_i
+      str_replace(., "1a", "a") %>%
+      str_replace(., "1c", "b") %>%
+      str_replace(., "3b", "c") %>%
+      str_replace(., "3c", "d") %>%
+      str_replace(., "3d", "e") %>%
+      str_replace(., "4a", "f") %>%
+      str_replace(., "4b", "g") %>%
+      str_replace(., "4c", "h") %>%
+      str_replace(., "4d", "i"),
+    starts_with("G10")
+  )
+```
+
+### Barriers to Reporting
+Children who had experienced technology-facilitated CSEA and indicated that they had not disclosed the incident were asked a follow-up question to explore their reasons for non-disclosure: “Were any of the following reasons why you did not tell anyone about what happened?” They were presented with a range of response options, including feeling embarrassed or ashamed, fear of stigma, and other potential barriers to disclosure.
+```{r renaming barriers, results="hide"}
+# Why didn't you report?
+df_wgt <- df_wgt %>%
+  rename_with(
+    # I did not know where to go or who to tell
+    ~ str_replace(., "G14_1_G", "unable_") %>%
+      # I felt embarrassed, ashamed/too emotionally difficult to tell
+      str_replace(., "G14_2_G", "ashamed_") %>%
+      # I did not think anyone would believe me or understand my situation
+      str_replace(., "G14_3_G", "disbelief_") %>%
+      # I was worried I would get in trouble if I told someone
+      str_replace(., "G14_4_G", "trouble_") %>%
+      # I felt that I did something wrong and did not want to tell
+      str_replace(., "G14_5_G", "myfault_") %>%
+      # I did not think it was serious enough to report
+      str_replace(., "G14_6_G", "notserious_") %>%
+      # I did not want the person who did this to get into trouble
+      str_replace(., "G14_7_G", "troubleother_") %>%
+      # I feared it would cause trouble for me or my family
+      str_replace(., "G14_8_G", "troublefam_") %>%
+      # I did not think anything would be done
+      str_replace(., "G14_9_G", "noaction_") %>%
+      # I did not know you could report these things
+      str_replace(., "G14_10_G", "knowledge_") %>%
+      # My friends discouraged me from reporting
+      str_replace(., "G14_11_G", "friendsdis_") %>%
+      # My parents discouraged me from reporting
+      str_replace(., "G14_12_G", "parentsdis_") %>%
+      # I feared it would not be kept confidential
+      str_replace(., "G14_13_G", "noconfidential_") %>%
+      # Other
+      str_replace(., "G14_14_G", "barrierso_") %>%
+      # Prefer not to say
+      str_replace(., "G14_888_G", "barrierspnot_") %>%
+      # Don`t know
+      str_replace(., "G14_999_G", "barriersdw_") %>%
+      # abuse_a to abuse_i
+      str_replace(., "1a", "a") %>%
+      str_replace(., "1c", "b") %>%
+      str_replace(., "3b", "c") %>%
+      str_replace(., "3c", "d") %>%
+      str_replace(., "3d", "e") %>%
+      str_replace(., "4a", "f") %>%
+      str_replace(., "4b", "g") %>%
+      str_replace(., "4c", "h") %>%
+      str_replace(., "4d", "i"),
+    starts_with("G14")
+  )
+```
+
+### Location of Technology-Facilitated CSEA Variables
+To determine whether technology-facilitated CSEA occurred online, offline, children were asked: “Thinking about the last time this happened, did it happen in any of these ways?” This was a multi-response question, allowing children to select all applicable options. The response items included: in-person, on social media platforms (e.g., Facebook, YouTube, Snapchat, WhatsApp, Twitter), in an online game, or some other way for each type of CSEA.
+```{r renaming online}
+# Last time, how did happen? (original labels: G8_1_G1a etc)
+df_wgt <- df_wgt %>%
+  rename_with(
+    # In person face-to-face
+    ~ str_replace(., "G8_1_G", "inperson_") %>%
+      # On social media (e.g., Facebook, etc.)
+      str_replace(., "G8_2_G", "socialmedia_") %>%
+      # In an online game
+      str_replace(., "G8_5_G", "onlinegame_") %>%
+      # Some other way
+      str_replace(., "G8_6_G", "someoway_") %>%
+      # Prefer not to say
+      str_replace(., "G8_888_G", "pnotsay_") %>%
+      # Don`t know
+      str_replace(., "G8_999_G", "dontknow_") %>%
+      # abuse_a to abuse_i
+      str_replace(., "1a", "a") %>%
+      str_replace(., "1c", "b") %>%
+      str_replace(., "3b", "c") %>%
+      str_replace(., "3c", "d") %>%
+      str_replace(., "3d", "e") %>%
+      str_replace(., "4a", "f") %>%
+      str_replace(., "4b", "g") %>%
+      str_replace(., "4c", "h") %>%
+      str_replace(., "4d", "i"),
+    starts_with("G8")
+  )
+```
+
+### Online Platforms Involved in Technology-Facilitated CSEA Variables
+Although most questions in the Disrupting Harm (DH) survey were platform-agnostic, adolescents who reported experiencing technology-facilitated child sexual exploitation and abuse (CSEA) on social media were asked a follow-up question to identify the specific platforms involved: “On which platform(s) or website(s) did this happen?” This question was only presented to participants who had previously indicated that the incident occurred via social media. Respondents could select from a predefined list of 17 platforms, including widely used services such as Facebook or Facebook Messenger (1), Twitter (2), Snapchat (3), Instagram (4), TikTok (5), WhatsApp (6), Line (7), YouTube (8), Tumblr (9), Flickr (10), Live.me (11), Periscope (12), Twitch (13), Discord (14), as well as broader response options: Other (15), Don’t know (16), and Prefer not to say (17).Each selected platform was recorded using platform-specific variable codes that corresponded to distinct types of CSEA experiences. For example, variables were labeled as platform_a.1, platform_b.4, etc., where the letter denotes the CSEA category and the number corresponds to the selected platform. Non-substantive responses such as "Other," "Don’t know," and "Prefer not to say" were also recorded using specific codes (e.g., platform_a.888, platform_a.999, platform_a.other).
+```{r renaming platforms}  
+# And on which platform(s) or website(s) did this happen?
+df_wgt <- df_wgt %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G1a", "platform_a.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G1c", "platform_b.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G3b", "platform_c.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G3c", "platform_d.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G3d", "platform_e.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4a", "platform_f.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4b", "platform_g.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4c", "platform_h.\\1")) %>%
+  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4d", "platform_i.\\1"))
+```
+
+### Recoding Other Variables of Interest 
+```{r recode}
+df_wgt <- df_wgt %>%
+  # Recode Country at 12 levels
+  # 5 missing as data collection was not completed in Rwanda
+  mutate(
+    COUNTRY = dplyr::recode(
+      COUNTRY,
+      `1`  = "Ethiopia",
+      `2`  = "Kenya",
+      `3`  = "Mozambique",
+      `4`  = "Namibia",
+      `6`  = "Tanzania",
+      `7`  = "Uganda",
+      `8`  = "Cambodia",
+      `9`  = "Indonesia",
+      `10` = "Malaysia",
+      `11` = "Philippines",
+      `12` = "Thailand",
+      `13` = "Vietnam"
+    )
+  ) %>%
+  # Recode sex (1: boys, 2: girls)
+  mutate(
+    sex = factor(
+      sex, 
+      levels = c(1, 2), 
+      labels = c("Boy", "Girl")
+    )
+  ) %>%
+  # Recode age at 6 levels
+  mutate(
+    age = dplyr::recode(
+      age,
+      `1` = "12",
+      `2` = "13",
+      `3` = "14",
+      `4` = "15",
+      `5` = "16",
+      `6` = "17"
+    )
+  ) %>%
+  # Recode urban/rural status
+  mutate(
+    urbanrural = dplyr::recode(
+      urbanrural,
+      `1` = "Urban",
+      `2` = "Peri urban",
+      `3` = "Rural"
+    )
+  )
+```
+
+### Independent Variables 
+
+This summary weighted table includes a range of independent variables grouped into key thematic domains:
+
+1. Protective Factors (Protective):
+   - Helpseeking (helpseeking): Indicates whether the respondent knows where to seek help  in cases of sexual assault or harassment.
+   - Sex Education (sexed): Indicates whether the respondent has received any form of sex education.
+   - Digital Skills to report (digitalskills): Self-reported ability to report harmful or abusive online content.
+
+2. Gender Norms and Attitudes (Cultural):
+   - Pre-martial sex (presex): Belief about whether premarital sex is acceptable.
+   - Inequitable attitudes towards sex: 
+   a) Men decide (mendecide): Belief that only men should decide when to have sex.
+   b) Male reputation (malerep): Belief that men should defend their reputation, even with force.
+   c) Violence against women (violence): Belief that women should tolerate violence to keep the family together.
+
+ 3. Positive Parental Mediation (Family):
+    a) pm_shared: Parent does shared activities together with me on the internet.
+    b) pm_safety: Parent  Suggests ways to use the internet safely.
+    c) pm_learn: Parent helps the child learn new things online.
+    d) pm_difficult: Helps them when something is difficult to do or find on the internet.
+    e) pm_bothers: Parent helps the child when something bothers me on the internet.
+
+These variables are summarized by country using survey weights to reflect population estimates.
+
+### All Indepedent Variables Across Africa
+All tables present original response values as collected—e.g., 0/1 for binary items, 1–5 for Likert-type scales, and special codes such as 'Do not know' (999) and 'Prefer not to say' (888)—without any recoding or transformation.
+
+Note: The variable pm_difficult (Parental mediation: help with difficult online tasks) had high levels of missingness across countries. This variable is retained in the summary for transparency.
+```{r, results='asis', warning=FALSE, echo=FALSE}
+# Select Africa data only 
+df_africa <- df_wgt %>%
+  filter(COUNTRY %in% c("Ethiopia","Kenya","Mozambique","Namibia","Tanzania","Uganda"))
+
+# Survey object
+df_africa_svy <- svydesign(
+  id = ~1,
+  weights = ~wgt_scaled,
+  data = df_africa
+)
+
+# Weighted summaries 
+missing_africa <- tbl_svysummary(
+  df_africa_svy,
+  by = COUNTRY,
+  include = c(
+    helpseeking, sexed, presex, digitalskills, mendecide,
+    malerep, violence, pm_shared, pm_safety, pm_learn, pm_difficult, pm_bothers
+  ),
+  type = all_dichotomous() ~ "categorical"
+) %>%
+  add_overall()
+missing_africa 
+```
+
+### All Indepedent Variables across Asia
+```{r, results='asis', warning=FALSE, echo=FALSE}
+# Asia data only 
+df_asia <- df_wgt %>%
+  filter(COUNTRY %in% c("Cambodia","Indonesia","Malaysia","Philippines","Thailand","Vietnam"))
+
+# survey object
+df_asiaa_svy <- svydesign(
+  id = ~1,
+  weights = ~wgt_scaled,
+  data = df_asia
+)
+
+# weighted summaries 
+missing_asia <- tbl_svysummary(
+  df_asiaa_svy,
+  by = COUNTRY,
+  include = c(
+    helpseeking, sexed, presex, digitalskills, mendecide,
+    malerep, violence, pm_shared, pm_safety, pm_learn, pm_difficult, pm_bothers
+  ),
+  type = all_dichotomous() ~ "categorical"
+) %>%
+  add_overall()
+missing_asia 
+```
+
+Checking for internal consistency of parental mediation variable
+``` {r pm alpha, warning=FALSE}
+# dropping pm_difficult as only 1980 completed responses (83% missing)
+alpha_pm <- psych::alpha(df_wgt[, c(
+                                    "pm_learn",
+                                    "pm_safety",
+                                    "pm_difficult",
+                                    "pm_shared",
+                                    "pm_bothers")]
+)
+alpha_pm
+```
+  
+## Subset Variables of Interest  
+```{r subset data}
+ocsea_df <- df_wgt %>%
+  select(
+    contains("CBU_ID"),
+    starts_with("abuse_"),
+    starts_with("family_"),
+    starts_with("toldnoone_"),
+    starts_with("police_"),
+    starts_with("friend_"),
+    starts_with("helpline_"),
+    starts_with("sworker_"),
+    starts_with("father_"),
+    starts_with("sibling_"),
+    starts_with("mother_"),
+    starts_with("teacher_"),
+    starts_with("other_"),
+    starts_with("othera_"),
+    starts_with("rprefer_"),
+    starts_with("rdontknow_"),
+    starts_with("unknown_"),
+    starts_with("unknown2_"),
+    starts_with("unknown3_"),
+    starts_with("perpnotsay"),
+    starts_with("known_"),
+    starts_with("knownr_"),
+    starts_with("knowno_"),
+    starts_with("knowno2_"),
+    starts_with("socialmedia_"),
+    starts_with("inperson_"),
+    starts_with("onlinegame_"),
+    starts_with("someoway_"),
+    starts_with("pnotsay_"),
+    starts_with("dontknow_"),
+    starts_with("platform_"),
+    starts_with("unable_"),
+    starts_with("ashamed_"),
+    starts_with("disbelief_"),
+    starts_with("trouble_"),
+    starts_with("troublefam_"),
+    starts_with("myfault_"),
+    starts_with("notserious_"),
+    starts_with("knowledge_"),
+    starts_with("troubleother_"),
+    starts_with("noaction_"),
+    starts_with("friendsdis_"),
+    starts_with("parentsdis_"),
+    starts_with("noconfidential_"),
+    starts_with("pm_"),
+    contains("sex"),
+    contains("wgt_"),
+    contains("age"),
+    contains("sexed"),
+    contains("COUNTRY"),
+    contains("helpseeking"),
+    contains("urbanrural"),
+    contains("digitalskills"),
+    contains("presex"),
+    contains("mendecide"),
+    contains("malerep"),
+    contains("violence")
+  )
+```
+
+### Weighted Descriptives 
+```{r weighted demographics, warning = FALSE}
+# checking sum of weights 
+weights <- sum(ocsea_df$wgt_scaled, na.rm = TRUE)
+
+# comparing it with our sample size
+observations <- nrow(ocsea_df)
+observations
+
+# survey object
+svy_overall <-
+  survey::svydesign(
+    id = ~1,
+    weights = ~wgt_scaled,
+    data = ocsea_df
+  )
+
+# weighted summaries
+demographics <- 
+svy_overall %>%
+ tbl_svysummary(
+    by = COUNTRY,
+    include = c(sex, age, urbanrural)
+  ) %>%
+  add_overall() 
+demographics 
+```
+
+### Technology-facilitated CSEA Likert Responses 
+
+To understand the prevalence of technology-facilitated CSEA , we use the question ("In the past year, how often have these things happened to you") to measure whether the child has experienced abuse or exploitation. In total, there are 9 sub-questions, each inquiring about a specific type of abuse. The answers to these sub-questions are originally captured on an ordinal scale ranging from 1 to 5:(1) Never (2) Rarely (3) Sometimes (4) Often (5) Very Often. 
+```{r missing, echo = FALSE, warning = FALSE}
+abuses_country <- 
+  svy_overall %>%
+  tbl_svysummary(
+    by = COUNTRY,
+    include = c(
+      abuse_a,
+      abuse_b,
+      abuse_c,
+      abuse_d,
+      abuse_e,
+      abuse_f,
+      abuse_g,
+      abuse_h,
+      abuse_i
+    )
+  ) %>%
+  add_overall()
+abuses_country
+```
+
+### Non-Response Codes
+
+Finally, we convert all the 'Do not know' (coded as 999) and 'Prefer not to say' (coded as 888) responses for our variables to NAs. 
+```{r NAs}
+ocsea_df[ocsea_df == 888] <- NA
+ocsea_df[ocsea_df == 999] <- NA
+```
+
+# CSEA Likert Scale Visualisation
+```{r ocsea likert, echo = FALSE, warning = FALSE}
+# combining all types
+abuse_all <- c(
+  "abuse_a",
+  "abuse_b",
+  "abuse_c",
+  "abuse_d",
+  "abuse_e",
+  "abuse_f",
+  "abuse_g",
+  "abuse_h",
+  "abuse_i"
+)
+
+# plotting Likert scale 
+plot_abuse <- function(df, abuse_all) {
+  plots_abuse <- list()
+  for (abuse_var in abuse_all) {
+    if (abuse_var %in% names(df)) {
+      abuse_data <- df %>%
+        filter(!is.na(!!sym(abuse_var))) %>%
+        select(!!sym(abuse_var), COUNTRY) %>%
+        group_by(COUNTRY, !!sym(abuse_var)) %>%
+        summarise(count = n()) %>%
+        mutate(percentage = (count / sum(count)) * 100)
+      p <- ggplot(abuse_data, aes(
+        x = COUNTRY,
+        y = percentage,
+        fill = !!sym(abuse_var)
+      )) +
+        geom_text(aes(
+          label = paste0(round(percentage))
+        ),
+        position = position_stack(vjust = 1),
+        size = 3,
+        color = "white"
+        ) +
+        geom_bar(stat = "identity", alpha = 0.8) +
+        labs(
+          title = paste(
+            "Abuse Variable: ", 
+            abuse_var),
+          x = "Country",
+          y = "Percentage"
+        ) +
+        theme_minimal() +
+        colorspace::scale_fill_continuous_sequential(
+          palette = "Inferno",
+          begin = .10,
+          end = .79
+        ) +
+        theme(
+          legend.position = "bottom",
+          legend.key.size = unit(0.7, "cm"),
+          strip.background = element_blank(),
+          panel.spacing = unit(2, "mm"),
+          axis.text.x = element_text(),
+          text = element_text(size = 8.2, face = "bold")
+        ) +
+        coord_flip()
+      plots_abuse[[abuse_var]] <- p
+    }
+  }
+  return(plots_abuse)
+}
+# All 9 variables 
+abuse_likert <- plot_abuse(ocsea_df, abuse_all)
+abuse_likert
+```
+
+# Wrangling Independent Variables (IVs) 
+Micro/individual: We use a continuous measure of age (12-17 years) and categorical measure for sex (1 = girl and 0 = boy).
+
+Meso/family: We located parental mediation as a key factor. Children completed five items indicating “When you use the internet, how often does your parent/carer/guardian do any of these things?” ranging from whether their parents actively supported, helped, and supervised the child navigating the online space (‘1’ (Never) to ‘5’ (Very often)). One item "pm_difficult" was dropped as it only included only 1980 responses.
+
+Macro/cultural: We extracted the various gender norms and attitudes that explored patriarchal norms regarding violence, honor, and control of girls. In the original DH survey, children were asked “Do you believe that” and presented with four statements, to which they could answer “Yes”, “No”, “I’m not sure” and “Prefer not to say”. These were then bifurcated into two separate variables – premarital sex (presex) and inequitable gender attitudes to accurately reflect progressive and regressive measure of gender norms. 
+
+Protective Factors: We also included three protective variables. The first measured whether the child had received any sex education, based on a Yes/No response to the item: “Have you received any sex education?” The second assessed digital skills for reporting harmful content, drawn from the item: “I know how to report harmful content relating to me or a group to which I belong.” Responses were recorded on a four-point Likert scale. Finally, help-seeking knowledge was assessed by asking: “Do you know where to get help if you or a friend experience sexual assault or sexual harassment?” with a Yes/No response format.
+``` {r recoding IVs}
+recode_ivs <- function(df) {
+  recoded_df <- df %>%
+    mutate(
+      parentmediate = rowMeans(
+        select(., "pm_learn", "pm_safety", "pm_shared", "pm_bothers"),
+        na.rm = TRUE
+      ),
+      nindex = mendecide + malerep + violence,
+
+    )
+
+  return(recoded_df)
+}
+ocsea_df <- recode_ivs(ocsea_df)
+``` 
+Check Reliability for Inequitable Gender Attitudes
+```{r nindex reliability}
+nindex_items <- ocsea_df  %>% 
+  select(mendecide, malerep, violence)
+
+alpha_result <- psych::alpha(nindex_items)
+alpha_result
+``` 
+
+
+# Measurement of Technology-Facilitated CSEA 
+
+Following the pre-reg, we transformed the likert scale into a binary variable to estimate if the child was subjected to technology-facilitated CSEA in any form/frequency. 
+
+(0) No instance of experience technology-facilitated CSEA 
+(1) Any instance of technology-facilitated CSEA ('Rarely', 'Sometimes', 'Often', and 'Very Often')
+```{r}
+binarise_variables <- function(df, cols = abuse_all) {
+  return(df %>%
+    mutate(across(
+      all_of(cols),
+      ~ case_when(
+        . == 1 ~ 0,
+        between(., 2, 5) ~ 1
+      )
+    )))
+}
+ocsea_df <- binarise_variables(ocsea_df)
+```
+
+This section provides detailed operationalization of the three CSEA prevalence indicators used in this study. All measures are derived from survey items capturing nine distinct forms of child sexual exploitation and abuse (CSEA), with children indicating the context in which each incident occurred (social media, online game, in person, or other). Children were asked whether they had experienced each of the following nine forms of CSEA (Supplementary Figures 2-9). For each endorsed item, children indicated where the incident occurred using binary flags: social media, online game, in person, or some other way. Response options also included "don't know" and "prefer not to say."
+
+**Primary measure**: We now create a dichotomous variable, victim, which measures whether a respondent has experienced at least one type of technology-facilitated CSEA  and whether it occurred online. Adolescents who had experienced any form of technology-facilitated CSEA either on social media or in online game were coded 1. We assigned 0 to those children who had either not experienced any technology-facilitated CSEA  or had only experienced non-online abuse. This approach therefore left out children who experienced technology-facilitated CSEA in-person or in some other way and allows us to take a conservative estimate of all instance of technology-facilitated CSEA that occurred exclusively online. This variable is used in subsequent models to estimate the prevalence and predictors of online-only CSEA exposure to maintain analytical specificity.
+```{r ocsea victim function}
+compute_victim <- function(df) {
+  return(df %>%
+    mutate(
+      victim = case_when(
+        (abuse_a == 1 & (socialmedia_a == 1 | onlinegame_a == 1)) ~ 1,
+        (abuse_b == 1 & (socialmedia_b == 1 | onlinegame_b == 1)) ~ 1,
+        (abuse_c == 1 & (socialmedia_c == 1 | onlinegame_c == 1)) ~ 1,
+        (abuse_d == 1 & (socialmedia_d == 1 | onlinegame_d == 1)) ~ 1,
+        (abuse_e == 1 & (socialmedia_e == 1 | onlinegame_e == 1)) ~ 1,
+        (abuse_f == 1 & (socialmedia_f == 1 | onlinegame_f == 1)) ~ 1,
+        (abuse_g == 1 & (socialmedia_g == 1 | onlinegame_g == 1)) ~ 1,
+        (abuse_h == 1 & (socialmedia_h == 1 | onlinegame_h == 1)) ~ 1,
+        (abuse_i == 1 & (socialmedia_i == 1 | onlinegame_i == 1)) ~ 1,
+        TRUE ~ 0
+      )
+    ))
+}
+ocsea_df <- compute_victim(ocsea_df)
+table(ocsea_df$victim)
+```
+
+**Broader CSEA** To capture the overall burden of child sexual exploitation and abuse, we constructed victim_all, which takes the value 1 if a respondent reported experiencing any of the nine CSEA items, regardless of whether the incident occurred online or offline. This measure represents a comprehensive indicator of any form of CSEA exposure, including in-person or other non-digital experiences.
+```{r}
+compute_victim2 <- function(df) {
+  df %>%
+    mutate(victim_all = as.integer(if_any(starts_with("abuse_"), ~ .x == 1)))
+}
+
+ocsea_df <- compute_victim2(ocsea_df)
+table(ocsea_df$victim_all)
+```
+
+**Inferred Technology-Facilitated CSEA**: We also constructed an inferred-technology-Facilitated CSEA indicator. Items that are intrinsically online were coded as 1 without any platform check: abuse_b (“sent me sexual images I did not want”), abuse_e (“asked for a photo/video showing my private parts”), abuse_f (“offered money/gifts in return for sexual images/videos”), and abuse_h (“shared sexual images of me without my consent”). Items that could occur either online or offline were coded as 1 only when an explicit online context was present. Specifically, abuse_a, abuse_c, abuse_d, abuse_g, and abuse_i required a platform flag—socialmedia_x == 1 or onlinegame_x == 1 for the corresponding item (for abuse_c, the online context is taken from the c platform flags as in the instrument: socialmedia_c == 1 or onlinegame_c == 1). All remaining cases were coded 0.
+```{r ocsea victim implied function,  echo = FALSE}
+compute_victim3 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      victim_implied = dplyr::case_when(
+        
+        # implied-online items (no platform check)
+        abuse_b == 1 ~ 1L,
+        abuse_e == 1 ~ 1L,
+        abuse_f == 1 ~ 1L,
+        abuse_h == 1 ~ 1L,
+
+        # need explicit online context
+        abuse_a == 1 & (socialmedia_a == 1 | onlinegame_a == 1) ~ 1L,
+        abuse_c == 1 & (socialmedia_c == 1 | onlinegame_c == 1) ~ 1L,
+        abuse_d == 1 & (socialmedia_d == 1 | onlinegame_d == 1) ~ 1L,
+        abuse_g == 1 & (socialmedia_g == 1 | onlinegame_g == 1) ~ 1L,
+        abuse_i == 1 & (socialmedia_i == 1 | onlinegame_i == 1) ~ 1L,
+
+        # everything else 
+        TRUE ~ 0L
+      )
+    )
+}
+
+ocsea_df <- compute_victim3(ocsea_df)
+table(ocsea_df$victim_implied) 
+```
+
+## Technology-Facilitated CSEA Opertionalisations
+Survey-weighted prevalence of technology-facilitated CSEA operationalisations by country (weighted N)
+```{r, warning=FALSE}
+svy_overall <- survey::svydesign(id = ~1, weights = ~wgt_scaled, data = ocsea_df)
+
+victim_measures <- 
+svy_overall %>%
+ tbl_svysummary(
+    by = COUNTRY,
+    include = c(victim_implied, victim, victim_all)
+  ) %>%
+  add_overall() 
+victim_measures
+```
+
+
+
+## Technology-facilitated CSEA Overall 
+To estimate the overall prevalence of technology-facilitated CSEA among children in the sample, we calculated a weighted proportion using the victim variable and survey weights.The final estimate suggests that approximately percentage_overall% of internet-using children in the sample experienced at least one instance of technology-facilitated CSEA that occurred online.
+```{r overall abuse weighted}
+# weighted sum of victims
+weighted_victim <- sum(ocsea_df$victim * ocsea_df$wgt_scaled, na.rm = TRUE)
+weighted_victim 
+
+
+# sample size
+total_n <- ocsea_df %>%
+  summarise(total_n = n()) %>%
+  pull(total_n)
+total_n 
+
+#compute weighted sum
+compute_percentage <- function(weighted_sum) {
+  total_weights <- sum(ocsea_df$wgt_scaled, na.rm = TRUE)
+  percentage <- (weighted_sum / total_weights) * 100  
+  return(round(percentage))
+}
+
+# percentage for each category
+percentage_overall <- compute_percentage(
+  sum(ocsea_df$victim * ocsea_df$wgt_scaled,
+      na.rm = TRUE)
+)
+# final percentages
+print(paste("Overall: ",  percentage_overall, "%"))
+percentage_overall
+
+
+# validating again
+svy <- ocsea_df %>% as_survey_design(weights = wgt_scaled)
+
+overall_prev <- svy %>%
+  summarise(p = survey_mean(victim, vartype = "ci", na.rm = TRUE)) %>%
+  mutate(
+    pct     = 100 * p,
+    pct_low = 100 * p_low,
+    pct_upp = 100 * p_upp
+  )
+
+cat(sprintf("Tech-facilitated CSEA: %.1f%% [%.1f–%.1f]\n",
+            overall_prev$pct, overall_prev$pct_low, overall_prev$pct_upp))
+```
+
+```{r}
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+# standardized formatting functions
+fmt_pct <- function(x, digits = 1) {
+  sprintf(paste0("%.", digits, "f%%"), x)
+}
+
+fmt_int <- function(x) {
+  format(round(x), big.mark = ",", scientific = FALSE, trim = TRUE)
+}
+```
+Labels for calculating prevelenece estimates 
+```{r}
+
+# mutating abuse_wise
+ocsea_df <- ocsea_df %>%
+  mutate(
+    abuse_a_online = if_else(abuse_a == 1 & (socialmedia_a == 1 | onlinegame_a == 1), 1L, 0L, missing = 0L),
+    abuse_b_online = if_else(abuse_b == 1 & (socialmedia_b == 1 | onlinegame_b == 1), 1L, 0L, missing = 0L),
+    abuse_c_online = if_else(abuse_c == 1 & (socialmedia_c == 1 | onlinegame_c == 1), 1L, 0L, missing = 0L),
+    abuse_d_online = if_else(abuse_d == 1 & (socialmedia_d == 1 | onlinegame_d == 1), 1L, 0L, missing = 0L),
+    abuse_e_online = if_else(abuse_e == 1 & (socialmedia_e == 1 | onlinegame_e == 1), 1L, 0L, missing = 0L),
+    abuse_f_online = if_else(abuse_f == 1 & (socialmedia_f == 1 | onlinegame_f == 1), 1L, 0L, missing = 0L),
+    abuse_g_online = if_else(abuse_g == 1 & (socialmedia_g == 1 | onlinegame_g == 1), 1L, 0L, missing = 0L),
+    abuse_h_online = if_else(abuse_h == 1 & (socialmedia_h == 1 | onlinegame_h == 1), 1L, 0L, missing = 0L),
+    abuse_i_online = if_else(abuse_i == 1 & (socialmedia_i == 1 | onlinegame_i == 1), 1L, 0L, missing = 0L)
+  )
+
+svy_overall <- survey::svydesign(id = ~1, weights = ~wgt_scaled, data = ocsea_df)
+
+# variable lists
+abuse_vars_online <- paste0("abuse_", letters[1:9], "_online")
+abuse_vars_overall <- paste0("abuse_", letters[1:9])
+
+# harm labels
+abuse_labels <- c(
+  abuse_a = "Unwanted sexual comments",
+  abuse_b = "Sent unwanted sexual images",
+  abuse_c = "Asked to talk about sex/acts",
+  abuse_d = "Asked to do something sexual",
+  abuse_e = "Asked for intimate photos/videos",
+  abuse_f = "Offered money/gifts for images",
+  abuse_g = "Offered money/gifts for in-person acts",
+  abuse_h = "Shared sexual images without consent",
+  abuse_i = "Threatened/blackmailed for sex"
+)
+names(abuse_labels) <- abuse_vars_overall
+```
+
+## Gender-Specific Prevalence Estimates
+We calculate technology-facilitated CSEA prevalence separately for boys and girls using survey weights and confidence intervals.
+```{r sex-prevalence}
+#| tbl-cap: "Descriptive prevalence by sex"
+
+# sex diff
+sex_prevalence <- ocsea_df %>%
+  as_survey_design(weights = wgt_scaled) %>%
+  group_by(sex) %>%
+  summarise(
+    n_unweighted       = unweighted(n()),
+    victims_unweighted = unweighted(sum(victim == 1, na.rm = TRUE)),
+    victims_weighted   = survey_total(as.numeric(victim == 1), na.rm = TRUE),
+    prevalence         = survey_mean(as.numeric(victim == 1), vartype = "ci", na.rm = TRUE)
+  ) %>%
+  transmute(
+    sex,
+    n_unweighted,
+    victims_unweighted,
+    victims_weighted,
+    `Prevalence (%)` = 100 * prevalence,
+    `Lower CI`       = 100 * prevalence_low,
+    `Upper CI`       = 100 * prevalence_upp
+  )
+
+kable(sex_prevalence, format = "html", escape = TRUE)
+```
+
+## Age-Specific Prevalence Estimates
+```{r ageprevalence}
+#| tbl-cap: "Technology-facilitated CSEA prevalence by age"
+#| label: age-prevalence
+
+#age diff
+age_prevalence <- ocsea_df %>%
+  as_survey_design(weights = wgt_scaled) %>%
+  group_by(age) %>%
+  summarise(
+    n_unweighted       = unweighted(n()),
+    victims_unweighted = unweighted(sum(victim == 1, na.rm = TRUE)),
+    victims_weighted   = survey_total(as.numeric(victim == 1), na.rm = TRUE),
+    prev               = survey_mean(as.numeric(victim == 1), vartype = "ci", na.rm = TRUE)
+  ) %>%
+  mutate(across(c(prev, prev_low, prev_upp), ~ . * 100)) %>%
+  ungroup()
+
+kable(age_prevalence , format = "html", escape = TRUE)
+
+```
+
+## Urban-rural-Specific Prevalence Estimates
+```{r urbanprevalence}
+#| tbl-cap: "Technology-facilitated CSEA prevalence by urbanrural"
+#| label: urban-prevalence
+
+# urban rural diff
+urban_rural <- ocsea_df %>%
+  as_survey_design(weights = wgt_scaled) %>%
+  group_by(urbanrural) %>%
+  summarise(
+    n_unweighted       = unweighted(n()),
+    victims_unweighted = unweighted(sum(victim == 1, na.rm = TRUE)),
+    victims_weighted   = survey_total(as.numeric(victim == 1), na.rm = TRUE),
+    prev               = survey_mean(as.numeric(victim == 1), vartype = "ci", na.rm = TRUE)
+  ) %>%
+  mutate(across(c(prev, prev_low, prev_upp), ~ . * 100)) %>%
+  ungroup()
+
+kable(urban_rural, format = "html", escape = TRUE)
+```
+## By Country (Online)
+```{r}
+
+# unweighted and weighted counts
+n_counts <- ocsea_df %>%
+  group_by(COUNTRY) %>%
+  summarise(
+    n_unweighted  = n(),
+    n_victims_unw = sum(victim == 1, na.rm = TRUE),
+    n_weighted    = round(sum(wgt_scaled, na.rm = TRUE)),
+    n_victims_w   = round(sum(victim * wgt_scaled, na.rm = TRUE))
+  )
+
+# weighted prevalence
+prev_country <- ocsea_df %>%
+  as_survey_design(weights = wgt_scaled) %>%
+  group_by(COUNTRY) %>%
+  summarise(
+    prev = survey_mean(as.numeric(victim == 1), vartype = "ci", na.rm = TRUE)
+  ) %>%
+  mutate(
+    Prevalence = prev * 100,
+    Lower      = prev_low * 100,
+    Upper      = prev_upp * 100
+  ) %>%
+  left_join(n_counts, by = "COUNTRY") %>%
+  mutate(
+    `n/N (unweighted)` = paste0(
+      format(n_victims_unw, big.mark = ","), "/",
+      format(n_unweighted,  big.mark = ",")
+    ),
+    `n/N (weighted)` = paste0(
+      format(n_victims_w, big.mark = ","), "/",
+      format(n_weighted,  big.mark = ",")
+    )
+  ) %>%
+  arrange(desc(Prevalence))
+
+country_results <- prev_country %>%
+  select(
+    Country              = COUNTRY,
+    `n/N (unweighted)`   = `n/N (unweighted)`,
+    `n/N (weighted)`     = `n/N (weighted)`,
+    `Prevalence (%)`     = Prevalence,
+    `Lower CI`           = Lower,
+    `Upper CI`           = Upper
+  )
+
+kable(
+  country_results,
+  digits    = 1,
+  row.names = FALSE,
+  caption   = "Online CSEA prevalence by country"
+)
+```
+
+
+## By Country (All CSEA)
+```{r}
+
+n_counts_all <- ocsea_df %>%
+  group_by(COUNTRY) %>%
+  summarise(
+    n_unweighted  = n(),
+    n_victims_unw = sum(victim_all == 1, na.rm = TRUE),
+    n_weighted    = round(sum(wgt_scaled, na.rm = TRUE)),
+    n_victims_w   = round(sum(victim_all * wgt_scaled, na.rm = TRUE))
+  )
+
+prev_country_all <- ocsea_df %>%
+  as_survey_design(weights = wgt_scaled) %>%
+  group_by(COUNTRY) %>%
+  summarise(
+    prev = survey_mean(as.numeric(victim_all == 1), vartype = "ci", na.rm = TRUE)
+  ) %>%
+  mutate(
+    Prevalence = prev * 100,
+    Lower      = prev_low * 100,
+    Upper      = prev_upp * 100
+  ) %>%
+  left_join(n_counts_all, by = "COUNTRY") %>%
+  mutate(
+    `n/N (unweighted)` = paste0(
+      format(n_victims_unw, big.mark = ","), "/",
+      format(n_unweighted,  big.mark = ",")
+    ),
+    `n/N (weighted)` = paste0(
+      format(n_victims_w, big.mark = ","), "/",
+      format(n_weighted,  big.mark = ",")
+    )
+  ) %>%
+  arrange(desc(Prevalence))
+
+kable(
+  prev_country_all %>%
+    select(
+      Country              = COUNTRY,
+      `n/N (unweighted)`   = `n/N (unweighted)`,
+      `n/N (weighted)`     = `n/N (weighted)`,
+      `Prevalence (%)`     = Prevalence,
+      `Lower CI`           = Lower,
+      `Upper CI`           = Upper
+    ),
+  digits    = 1,
+  row.names = FALSE,
+  caption   = "All CSEA prevalence by country"
+)
+```
+
+
+## By Type (Online)
+```{r, warning = FALSE}
+# map online variable name to label
+get_harm_label <- function(online_var) {
+  base_var <- sub("_online$", "", online_var)
+  unname(abuse_labels[base_var])
+}
+
+# unweighted and weighted counts by type
+n_counts_type <- map_dfr(abuse_vars_online, function(var) {
+  tibble(
+    Type          = get_harm_label(var),
+    n_unweighted  = sum(!is.na(ocsea_df[[var]])),
+    n_victims_unw = sum(ocsea_df[[var]] == 1, na.rm = TRUE),
+    n_weighted    = round(sum(ocsea_df$wgt_scaled, na.rm = TRUE)),
+    n_victims_w   = round(sum(ocsea_df[[var]] * ocsea_df$wgt_scaled, na.rm = TRUE))
+  )
+}) %>%
+  bind_rows(tibble(
+    Type          = "Any online CSEA",
+    n_unweighted  = sum(!is.na(ocsea_df$victim)),
+    n_victims_unw = sum(ocsea_df$victim == 1, na.rm = TRUE),
+    n_weighted    = round(sum(ocsea_df$wgt_scaled, na.rm = TRUE)),
+    n_victims_w   = round(sum(ocsea_df$victim * ocsea_df$wgt_scaled, na.rm = TRUE))
+  ))
+
+online_prev <- function(by_country = FALSE) {
+  des <- ocsea_df %>%
+    as_survey_design(weights = wgt_scaled)
+  
+  type_res <- map_dfr(abuse_vars_online, function(var) {
+    lab <- get_harm_label(var)
+    
+    if (!by_country) {
+      est <- des %>%
+        summarise(
+          prev = survey_mean(.data[[var]], vartype = "ci", na.rm = TRUE)
+        )
+      tibble(
+        Type       = lab,
+        Prevalence = est$prev     * 100,
+        Lower      = est$prev_low * 100,
+        Upper      = est$prev_upp * 100
+      )
+    } else {
+      est <- des %>%
+        group_by(COUNTRY) %>%
+        summarise(
+          prev = survey_mean(.data[[var]], vartype = "ci", na.rm = TRUE),
+          .groups = "drop"
+        )
+      tibble(
+        Country    = as.character(est$COUNTRY),
+        Type       = lab,
+        Prevalence = est$prev     * 100,
+        Lower      = est$prev_low * 100,
+        Upper      = est$prev_upp * 100
+      )
+    }
+  })
+  
+  if (!by_country) {
+    overall_est <- des %>%
+      summarise(
+        prev = survey_mean(as.numeric(victim == 1), vartype = "ci", na.rm = TRUE)
+      )
+    overall_row <- tibble(
+      Type       = "Any online CSEA",
+      Prevalence = overall_est$prev     * 100,
+      Lower      = overall_est$prev_low * 100,
+      Upper      = overall_est$prev_upp * 100
+    )
+    out <- bind_rows(type_res, overall_row) %>%
+      left_join(n_counts_type, by = "Type") %>%
+      mutate(
+        `n/N (unweighted)` = paste0(
+          format(n_victims_unw, big.mark = ","), "/",
+          format(n_unweighted,  big.mark = ",")
+        ),
+        `n/N (weighted)` = paste0(
+          format(n_victims_w, big.mark = ","), "/",
+          format(n_weighted,  big.mark = ",")
+        )
+      ) %>%
+      arrange(desc(Prevalence)) %>%
+      select(Type, `n/N (unweighted)`, `n/N (weighted)`, Prevalence, Lower, Upper)
+    
+  } else {
+    overall_est <- des %>%
+      group_by(COUNTRY) %>%
+      summarise(
+        prev = survey_mean(as.numeric(victim == 1), vartype = "ci", na.rm = TRUE),
+        .groups = "drop"
+      )
+    overall_row <- tibble(
+      Country    = as.character(overall_est$COUNTRY),
+      Type       = "Any online CSEA",
+      Prevalence = overall_est$prev     * 100,
+      Lower      = overall_est$prev_low * 100,
+      Upper      = overall_est$prev_upp * 100
+    )
+    out <- bind_rows(type_res, overall_row) %>%
+      arrange(Country, desc(Prevalence)) %>%
+      select(Country, Type, Prevalence, Lower, Upper)
+  }
+  out
+}
+
+type_results <- online_prev(by_country = FALSE)
+
+kable(
+  type_results,
+  digits    = 1,
+  row.names = FALSE,
+  col.names = c("Type of Abuse", "n/N (unweighted)", "n/N (weighted)", 
+                "Prevalence (%)", "Lower CI", "Upper CI"),
+  caption   = "Online CSEA prevalence by type"
+)
+```
+
+
+## By Type (All CSEA)
+```{r, warning = FALSE}
+type_results_all <- map_dfr(abuse_vars_overall, function(var) {
+  lab <- unname(abuse_labels[var])
+  
+ est <- ocsea_df %>%
+  as_survey_design(weights = wgt_scaled) %>%
+    summarise(
+      prev = survey_mean(.data[[var]], vartype = "ci", na.rm = TRUE)
+    )
+  
+  tibble(
+    Type       = lab,
+    Prevalence = est$prev     * 100,
+    Lower      = est$prev_low * 100,
+    Upper      = est$prev_upp * 100
+  )
+})
+
+overall_all <- svy_overall %>%
+  as_survey_design(weights = wgt_scaled) %>%
+  summarise(
+    prev = survey_mean(as.numeric(victim_all == 1), vartype = "ci", na.rm = TRUE)
+  )
+
+type_results_all <- type_results_all %>%
+  bind_rows(
+    tibble(
+      Type       = "Any CSEA (any context)",
+      Prevalence = overall_all$prev     * 100,
+      Lower      = overall_all$prev_low * 100,
+      Upper      = overall_all$prev_upp * 100
+    )
+  ) %>%
+  arrange(desc(Prevalence))
+
+kable(
+  type_results_all,
+  digits   = 1,
+  row.names = FALSE,
+  col.names = c("Type of Abuse", "Prevalence (%)", "Lower CI", "Upper CI"),
+  caption  = "CSEA prevalence by type (any context)"
+)
+```
+## By Type and Country (Online CSEA)
+```{r, warning = FALSE}
+
+# counts by country and type
+n_counts_type_country <- map_dfr(abuse_vars_online, function(var) {
+  ocsea_df %>%
+    group_by(COUNTRY) %>%
+    summarise(
+      Type          = get_harm_label(var),
+      Denominator   = sum(!is.na(.data[[var]])),
+      Victims_unw   = sum(.data[[var]] == 1, na.rm = TRUE),
+      Victims_w     = round(sum(.data[[var]] * wgt_scaled, na.rm = TRUE))
+    )
+}) %>%
+  bind_rows(
+    ocsea_df %>%
+      group_by(COUNTRY) %>%
+      summarise(
+        Type        = "Any online CSEA",
+        Denominator = sum(!is.na(victim)),
+        Victims_unw = sum(victim == 1, na.rm = TRUE),
+        Victims_w   = round(sum(victim * wgt_scaled, na.rm = TRUE))
+      )
+  )
+
+# join into results
+type_country_results <- online_prev(by_country = TRUE) %>%
+  left_join(n_counts_type_country, by = c("Country" = "COUNTRY", "Type")) %>%
+  select(Country, Type, Denominator, Victims_unw, Victims_w, Prevalence, Lower, Upper)
+
+kable(
+  type_country_results,
+  digits    = 1,
+  row.names = FALSE,
+  col.names = c("Country", "Type of Abuse", "Denominator (N)", 
+                "Victims (unweighted)", "Victims (weighted)",
+                "Prevalence (%)", "Lower CI", "Upper CI"),
+  caption   = "Online CSEA prevalence by type and country"
+)
+```
+
+# Technology-facilitated CSEA (weighted) Maps
+
+```{r, warning = FALSE}
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+harm_labels <- c(
+  abuse_a_online = "Unwanted sexual comments",
+  abuse_b_online = "Sent unwanted sexual images",
+  abuse_c_online = "Asked to talk about sex/acts",
+  abuse_d_online = "Asked to do something sexual",
+  abuse_e_online = "Asked for intimate photos/videos",
+  abuse_f_online = "Offered money/gifts for images",
+  abuse_g_online = "Offered money/gifts for in-person acts",
+  abuse_h_online = "Shared sexual images without consent",
+  abuse_i_online = "Threatened/blackmailed for sex"
+)
+```
+
+### Nine Types of Technology-facilitated CSEA Measures
+```{r, warning = FALSE}
+#| fig-cap: "Estimated proportion of internet-using children who self-reported their experience of technology-facilitated CSEA in 2020-2021."
+
+# harm_labels same as abuse_labels
+map_labels <- harm_labels
+
+countries <- c(
+  "Ethiopia", "Kenya", "Mozambique", "Namibia", "Tanzania", "Uganda", 
+  "Cambodia", "Indonesia", "Malaysia", "Philippines", "Thailand", "Vietnam"
+)
+
+# define the variable list
+abuse_all_online <- abuse_vars_online 
+
+all_max_values <- numeric()
+
+for (variable in abuse_all_online) {
+  temp_data <- ocsea_df %>%
+    group_by(COUNTRY) %>%
+    summarize(
+      weighted_sum = sum(get(variable) * wgt_scaled, na.rm = TRUE),
+      total_responses = sum(wgt_scaled, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(percentage_abuse = (weighted_sum / total_responses) * 100)
+  
+  all_max_values <- c(all_max_values, max(temp_data$percentage_abuse, na.rm = TRUE))
+}
+
+data_max <- max(all_max_values, na.rm = TRUE)
+scale_max <- ceiling(data_max / 5) * 5  
+scale_max <- max(scale_max, 20)   
+
+```
+
+```{r}
+make_map <- function(variable, show_legend = TRUE, scale_maximum = scale_max) {
+  
+  title <- abuse_labels[[sub("_online$", "", variable)]] 
+  
+  # calculate weighted prevalence
+  weighted_by_country <- ocsea_df %>%
+    group_by(COUNTRY) %>%
+    summarize(
+      weighted_sum    = sum(get(variable) * wgt_scaled, na.rm = TRUE),
+      total_responses = sum(wgt_scaled, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(percentage_abuse = round((weighted_sum / total_responses) * 100, 1))
+  
+  # natural earth world map (public domain)
+  world_sf <- ne_countries(scale = "medium", returnclass = "sf") %>%
+    select(name, geometry) %>%
+    mutate(name = case_match(name,
+      "United Republic of Tanzania" ~ "Tanzania",
+      "Viet Nam"                    ~ "Vietnam",
+      .default = name
+    ))
+  
+  # join prevalence data
+  world_joined <- world_sf %>%
+    left_join(weighted_by_country, by = c("name" = "COUNTRY"))
+  
+  # filter to study countries
+  world_filtered <- world_joined %>%
+    filter(name %in% countries)
+  
+  # centroids for labels
+  centroids <- world_filtered %>%
+    filter(!is.na(percentage_abuse)) %>%
+    st_centroid() %>%
+    mutate(
+      long = st_coordinates(.)[, 1],
+      lat  = st_coordinates(.)[, 2]
+    ) %>%
+    st_drop_geometry()
+  
+  # plot
+  map_plot <- ggplot() +
+    geom_sf(
+      data      = world_filtered,
+      aes(fill  = percentage_abuse),
+      color     = "black",
+      linewidth = 0.3
+    ) +
+    scale_fill_viridis_c(
+      name   = "Prevalence (%)",
+      option = "inferno",
+      limits = c(0, scale_maximum),
+      breaks = seq(0, scale_maximum, by = 5),
+      begin  = 0.1,
+      end    = 0.95,
+      na.value = "grey85",
+      guide  = if (show_legend) guide_colorbar(barwidth = 15, barheight = 0.8) else "none"
+    ) +
+    geom_label_repel(
+      data    = centroids,
+      aes(x   = long, y = lat, 
+          label = paste0(name, ": ", percentage_abuse, "%")),
+      size    = 2.0,
+      family  = "sans",
+      fill    = alpha("white", 0.85),
+      min.segment.length = 0,
+      seed    = 42
+    ) +
+    coord_sf(datum = NA) +
+    theme_void() +
+    labs(title = str_wrap(title, width = 50)) +
+    theme(
+      plot.title       = element_text(size = 9, hjust = 0.5, 
+                                      face = "bold", family = "sans"),
+      legend.position  = if (show_legend) "bottom" else "none",
+      legend.text      = element_text(size = 7, family = "sans"),
+      legend.title     = element_text(size = 8, family = "sans")
+    )
+  
+  return(map_plot)
+}
+
+# generate all maps
+map_plots <- list()
+for (variable in abuse_all_online) {
+  map_plots[[variable]] <- make_map(variable, show_legend = TRUE)
+}
+for (p in map_plots) {
+  print(p)
+}
+```
+
+## Combine Figure 1 
+```{r abuse grid, warning = FALSE, echo = FALSE}
+#| fig-width: 14
+#| fig-height: 10
+#| fig-cap: "Estimated proportion of internet-using children who self-reported their experience of technology-facilitated CSEA in 2020-2021."
+
+# select 4 measures
+p1 <- make_map("abuse_b_online", show_legend = FALSE)
+p2 <- make_map("abuse_d_online", show_legend = FALSE)
+p3 <- make_map("abuse_e_online", show_legend = FALSE)
+p4 <- make_map("abuse_i_online", show_legend = TRUE)
+
+# combine maps
+figure1 <- (p1 | p2) / (p3 | p4) +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(
+    guides  = "collect",
+    heights = c(1, 1)
+  ) &
+  theme(
+    legend.position = "bottom",
+    plot.margin     = margin(0, 2, 0, 2)  
+  )
+figure1
+
+# save
+ggsave(
+  filename = "Figure1.pdf",
+  plot     = figure1,
+  width    = 18,
+  height   = 18,
+  units    = "cm",
+  dpi      = 600
+)
+```
+
+```{r, warning = FALSE}
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+abuse_labels_online <- c(
+  abuse_a_online = "Unwanted sexual comments",
+  abuse_b_online = "Sent unwanted sexual images",
+  abuse_c_online = "Asked to talk about sex/acts",
+  abuse_d_online = "Asked to do something sexual",
+  abuse_e_online = "Asked for intimate photos/videos",
+  abuse_f_online = "Offered money/gifts for images",
+  abuse_g_online = "Offered money/gifts for in-person acts",
+  abuse_h_online = "Shared sexual images without consent",
+  abuse_i_online = "Threatened/blackmailed for sex"
+)
+```
+
+## Extended Data Figure 1 
+
+```{r extd, warning = FALSE}
+abuse_all_online <- names(abuse_labels_online)
+
+# country ordering by overall victim prevalence 
+svy_victim_nomiss <- subset(svy_overall, !is.na(victim))
+country_order <- svyby(
+  ~ victim,
+  by      = ~ COUNTRY,
+  design  = svy_victim_nomiss,
+  FUN     = svymean,
+  vartype = "ci"
+) %>%
+  as_tibble() %>%
+  arrange(victim) %>%
+  pull(COUNTRY)
+
+# compute prevalence per type × country 
+harms_by_country <- map_dfr(abuse_all_online, function(var) {
+  formula <- as.formula(paste("~", var))
+  result <- svyby(formula, ~COUNTRY, design = svy_overall, svymean,
+                  na.rm = TRUE, vartype = "ci")
+  out <- as_tibble(result)
+  names(out)[2:4] <- c("prop", "prop_low", "prop_upp")
+  out$harm <- var
+  out
+}) %>%
+  mutate(
+    pct     = 100 * prop,
+    pct_low = 100 * prop_low,
+    pct_upp = 100 * prop_upp
+  )
+
+# compute raw counts per type × country for n<3 check
+raw_counts <- map_dfr(abuse_all_online, function(var) {
+  svy_overall$variables %>%
+    group_by(COUNTRY) %>%
+    summarise(
+      n    = sum(!is.na(.data[[var]]) & .data[[var]] == 1),
+      harm = var,
+      .groups = "drop"
+    )
+})
+
+# map harm codes to labels, set country order, join counts
+extended_data <- harms_by_country %>%
+  mutate(
+    harm    = factor(
+      harm,
+      levels = names(abuse_labels_online),
+      labels = unname(abuse_labels_online)
+    ),
+    COUNTRY = factor(COUNTRY, levels = country_order)
+  ) %>%
+  left_join(
+    raw_counts %>%
+      mutate(
+        harm = factor(
+          harm,
+          levels = names(abuse_labels_online),
+          labels = unname(abuse_labels_online)
+        )
+      ),
+    by = c("COUNTRY", "harm")
+  ) %>%
+  mutate(
+    show_ci = n >= 3,
+    COUNTRY = factor(COUNTRY, levels = country_order)  # restore order after join
+  )
+```
+
+```{r extended-fig1, warning = FALSE}
+#| fig-cap: "Survey-weighted prevalence of nine technology-facilitated CSEA harms by country with 95% design-based confidence intervals. Estimates use constant country denominators (all internet-using children aged 12–17; item nonresponse treated as non-events). Error bars suppressed where n < 3."
+#| fig-width: 12
+#| fig-height: 14
+
+# facets by harm 
+figure1_a <- ggplot(extended_data, aes(x = pct, y = COUNTRY)) +
+  # error bars only where n >= 3
+  geom_errorbarh(
+    data = ~ subset(.x, show_ci),
+    aes(xmin = pct_low, xmax = pct_upp, colour = pct),
+    height = 0.20, linewidth = 0.6, alpha = 0.95
+  ) +
+  # keep all points regardless of n
+  geom_point(aes(colour = pct), size = 2.6) +
+  facet_wrap(~ harm, ncol = 3, labeller = label_wrap_gen(width = 28)) +
+  scale_x_continuous(
+    breaks = seq(0, 20, 5),
+    labels = function(x) sprintf("%g%%", x),
+    expand = expansion(mult = c(0.02, 0.08))
+  ) +
+  coord_cartesian(xlim = c(0, 20)) +
+  scale_colour_viridis_c(
+    option = "inferno",
+    begin = 0.32, end = 0.999,
+    limits = c(0, 20),
+    breaks = seq(0, 20, 5),
+    oob = scales::squish,
+    name = "Prevalence (%)",
+    guide = guide_colorbar(barheight = unit(4, "mm"), barwidth = unit(60, "mm"))
+  ) +
+  labs(
+    x = "Prevalence (%), survey-weighted (95% CI)",
+    y = "Country"
+  ) +
+  theme_minimal(base_size = 11, base_family = "sans") +
+  theme(
+    plot.title.position = "plot",
+    strip.background   = element_rect(fill = "black", colour = "black"),
+    strip.text         = element_text(colour = "white", face = "bold",
+                                      size = 11, family = "sans"),
+    panel.border       = element_rect(colour = "black", fill = NA,
+                                      linewidth = 0.4),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.title.x       = element_text(margin = margin(t = 8), family = "sans"),
+    axis.title.y       = element_text(margin = margin(r = 8), family = "sans"),
+    axis.text          = element_text(family = "sans"),
+    legend.position    = "bottom",
+    legend.title       = element_text(size = 9, family = "sans"),
+    legend.text        = element_text(size = 8, family = "sans")
+  )
+
+figure1_a
+
+# save as Extended Data Fig 1
+ggsave(
+  filename = "Extended Data Fig.1.tif",
+  plot     = figure1_a,
+  width    = 10,
+  height   = 10,
+  units    = "in",
+  dpi      = 600,
+  compression = "lzw"
+)
+```
+
+
+# Descriptives: Location, Platforms and Perpetrators
+
+We use a common heat plot function to visualise where children reported experencing technology-facilitated CSEA and other descriptive variables
+```{r wrangle heatplot}
+heatplot_wrangling <- function(df, list, labels) {
+  
+  # select weight and relevant columns
+  selected_data <- df %>%
+    select(wgt_scaled, starts_with(list))
+  
+  # reshape data for heatmap
+  heatplot_data <- selected_data %>%
+    pivot_longer(
+      cols = -wgt_scaled,
+      names_to = "name",
+      values_to = "value"
+    ) %>%
+    separate(
+      name,
+      into = c("place", "type"),
+      sep = "_",
+      extra = "drop"
+    ) %>%
+    filter(!is.na(value)) %>%
+    group_by(place, type) %>%
+    summarise(
+      # calculate weighted proportion
+      Proportion = sum(value * wgt_scaled, na.rm = TRUE) / sum(wgt_scaled, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(-Proportion) %>%
+    mutate(
+      # recode labels 
+      place = recode(place, !!!labels),
+      
+      # recode CSEA type codes 
+      type = recode(
+        type,
+        "a" = "Sexual comments",
+        "b" = "Sexual images",
+        "c" = "Talk about sex",
+        "d" = "Do something sexual",
+        "e" = "Image/video: private parts",
+        "f" = "Money for sexual images/videos",
+        "g" = "Money to meet to do something sexual",
+        "h" = "Shared sexual images without consent",
+        "i" = "Blackmailed for sexual activities"
+      )
+    )
+  
+  return(heatplot_data)
+}
+```
+
+## Heatplot functions
+
+```{r heatplot function}
+heatplot <- function(data) {
+  data <- data %>%
+    mutate(
+      place = factor(place, levels = unique(data$place[order(data$Proportion)]))
+    )
+  
+  plot <- ggplot(data, aes(x = place, y = type)) +
+    geom_raster(aes(fill = Proportion)) +
+    scale_y_discrete(position = "right") +
+    colorspace::scale_fill_continuous_sequential(
+      palette = "Inferno",
+      begin = 0.06,
+      end = 0.95
+    ) +
+    theme_minimal(base_family = "serif") +
+    theme(
+      axis.text.x = element_text(
+        face = "bold",
+        angle = 75,
+        hjust = 1,
+        vjust = 1,
+        size = 8
+      ),
+      axis.text.y = element_text(
+        face = "bold",
+        size = 10
+      ),
+      legend.position = "bottom",
+      legend.key.size = unit(0.7, "cm"),
+      legend.key.height = unit(0.5, "cm"),
+      legend.key.width = unit(1.5, "cm"),
+      legend.text = element_text(size = 10),
+      strip.background = element_blank(),
+      panel.spacing = unit(4, "mm"),
+      text = element_text(size = 12, face = "bold")
+    ) +
+    labs(
+      x = "",
+      y = "",
+      fill = "Proportion"
+    )
+
+  return(plot)
+}
+```
+
+## Location Distribution by CSEA Type
+
+We analyse where each of the nine forms of CSEA occurred (social media, gaming, in person, other), calculating weighted prevalence with 95% confidence intervals. This reveals location-specific risk profiles for different CSEA types.
+```{r platform-by-abuse-type-ci}
+
+# survey design
+svy <- ocsea_df %>% as_survey_design(weights = wgt_scaled)
+
+# platform distribution for each CSEA
+platform_ci <- purrr::map_df(letters[1:9], function(type) {
+  
+  abuse_var <- paste0("abuse_", type)
+  n_victims <- sum(ocsea_df[[abuse_var]] == 1, na.rm = TRUE)
+
+  
+  # survey design
+  victims_svy <- svy %>% dplyr::filter(!!rlang::sym(abuse_var) == 1)
+  
+  # place variables
+  sm  <- rlang::sym(paste0("socialmedia_", type))
+  gm  <- rlang::sym(paste0("onlinegame_",  type))
+  ip  <- rlang::sym(paste0("inperson_",    type))
+  oth <- rlang::sym(paste0("someoway_",    type))
+  
+  victims_svy %>%
+    summarise(
+      abuse_type = abuse_labels[paste0("abuse_", type)],
+      
+      # totals (denominator among victims)
+      n_unweighted = dplyr::n(),
+      n_weighted   = survey_total(vartype = "ci"),
+      social_media = survey_mean(!!sm  == 1, vartype = "ci", na.rm = TRUE) * 100,
+      gaming       = survey_mean(!!gm  == 1, vartype = "ci", na.rm = TRUE) * 100,
+      in_person    = survey_mean(!!ip  == 1, vartype = "ci", na.rm = TRUE) * 100,
+      other        = survey_mean(!!oth == 1, vartype = "ci", na.rm = TRUE) * 100,
+      sm_n_unw  = sum(!!sm  == 1, na.rm = TRUE),
+      gm_n_unw  = sum(!!gm  == 1, na.rm = TRUE),
+      ip_n_unw  = sum(!!ip  == 1, na.rm = TRUE),
+      oth_n_unw = sum(!!oth == 1, na.rm = TRUE),
+      sm_n_w   = survey_total(!!sm  == 1, vartype = "ci", na.rm = TRUE),
+      gm_n_w   = survey_total(!!gm  == 1, vartype = "ci", na.rm = TRUE),
+      ip_n_w   = survey_total(!!ip  == 1, vartype = "ci", na.rm = TRUE),
+      oth_n_w  = survey_total(!!oth == 1, vartype = "ci", na.rm = TRUE)
+    )
+})
+```
+
+```{r}
+#| label: tbl-platform-by-abuse
+#| tbl-cap: "Where each CSEA occurred (% of victims; survey-weighted 95% CIs)."
+#| echo: false
+#| message: false
+#| warning: false
+
+platform_location <- platform_ci %>%
+  mutate(
+    `Abuse Type` = abuse_type,
+    `N`          = sprintf("%s (weighted %.0f)", scales::comma(n_unweighted), as.numeric(n_weighted)),
+    `Social media` = sprintf("%.1f%% (%.1f–%.1f)", social_media, social_media_low, social_media_upp),
+    `Gaming`       = sprintf("%.1f%% (%.1f–%.1f)", gaming, gaming_low, gaming_upp),
+    `In person`    = sprintf("%.1f%% (%.1f–%.1f)", in_person, in_person_low, in_person_upp),
+    `Other`        = sprintf("%.1f%% (%.1f–%.1f)", other, other_low, other_upp)
+  ) %>%
+  select(`Abuse Type`, `N`, `Social media`, `Gaming`, `In person`, `Other`)
+
+location_table <- platform_location %>%
+  gt() %>%
+  cols_label(
+    `Abuse Type`   = "Abuse type",
+    `N`            = "Victims (N; unweighted, weighted)",
+    `Social media` = "Social media",
+    `Gaming`       = "Gaming",
+    `In person`    = "In person",
+    `Other`        = "Other"
+  ) %>%
+  tab_source_note(
+    gt::md(paste(
+      "For each CSEA type, denominators are victims of that harm (i.e., rows where the CSEA = 1).",
+      "Estimates are survey-weighted; 95% CIs use design-based variance.",
+      sep = "<br>"
+    ))
+  ) %>%
+  tab_options(table.font.size = gt::px(12), data_row.padding = gt::px(4))
+
+location_table
+```
+
+## Location Pattern Analysis
+
+We classify each child's CSEA responses into mutually exclusive location patterns (e.g., digital-only, digital + in-person), account for uncertainty choices, then produce weighted counts and percentages in a table.This analysis accounts for children who selected multiple locations and those indicating uncertainty.
+```{r location-patterns}
+#| tbl-cap: "Location patterns for technology-facilitated CSEA (weighted)"
+
+get_any_location <- function(df, prefix) {
+    # items a–i
+  items <- letters[1:9]                             
+  abuse_cols <- paste0("abuse_", items)    
+  loc_cols   <- paste0(prefix, "_", items)            
+  abuse_cols <- intersect(abuse_cols, names(df))
+  loc_cols   <- intersect(loc_cols,   names(df))
+
+  if (length(abuse_cols) == 0 || length(loc_cols) == 0) {
+    return(rep.int(0L, nrow(df)))
+  }
+
+  # each item a–i, check: abuse= 1 and location =1 
+  any_loc <- rowSums(
+    sapply(items, function(i) {
+      a <- paste0("abuse_", i)
+      l <- paste0(prefix, "_", i)
+      if (a %in% names(df) && l %in% names(df)) {
+        (df[[a]] == 1) & (df[[l]] == 1)
+      } else {
+        FALSE
+      }
+    }),
+    na.rm = TRUE
+  )
+
+  as.integer(any_loc > 0)
+}
+
+# per-child location indicators 
+location_data <- ocsea_df %>%
+  mutate(
+    # core locations
+    in_person       = get_any_location(., "inperson")    == 1,
+    social_media    = get_any_location(., "socialmedia") == 1,
+    online_game     = get_any_location(., "onlinegame")  == 1,
+    other_way       = get_any_location(., "someoway")    == 1,
+
+    # uncertainty selections
+    dont_know       = get_any_location(., "dontknow")    == 1,
+    prefer_not_say  = get_any_location(., "pnotsay")     == 1,
+
+    # derived flags
+    any_substantive = in_person | social_media | online_game | other_way,
+    any_uncertain   = dont_know | prefer_not_say,
+    digital         = social_media | online_game
+  )
+
+# we compute mutually exclusive patterns
+patterns <- location_data %>%
+  summarise(
+    
+    # single-location, no uncertainty
+    `In person only`     = sum(wgt_scaled * ( in_person & !digital & !other_way & !any_uncertain )),
+    `Social media only`  = sum(wgt_scaled * ( social_media & !in_person & !online_game & !other_way & !any_uncertain )),
+    `Online game only`   = sum(wgt_scaled * ( online_game & !in_person & !social_media & !other_way & !any_uncertain )),
+    `Other way only`     = sum(wgt_scaled * ( other_way & !in_person & !digital & !any_uncertain )),
+
+    # two-location, no uncertainty
+    `Digital + in person`= sum(wgt_scaled * ( digital & in_person & !other_way & !any_uncertain )),
+    `Digital + other`    = sum(wgt_scaled * ( digital & other_way & !in_person & !any_uncertain )),
+    `In person + other`  = sum(wgt_scaled * ( in_person & other_way & !digital & !any_uncertain )),
+
+    # three or more locations, no uncertainty
+    `Three+ locations`   = sum(wgt_scaled * ( (in_person + social_media + online_game + other_way >= 3) & !any_uncertain )),
+
+    # uncertainty buckets
+    `Location + uncertainty`   = sum(wgt_scaled * ( any_substantive & any_uncertain )),
+    `Don't know only`          = sum(wgt_scaled * ( !any_substantive &  dont_know & !prefer_not_say )),
+    `Prefer not to say only`   = sum(wgt_scaled * ( !any_substantive & !dont_know &  prefer_not_say )),
+
+    # totals (not mutually exclusive)
+    `Total digital`      = sum(wgt_scaled * digital),
+    `Total substantive`  = sum(wgt_scaled * any_substantive),
+    `Total responses`    = sum(wgt_scaled * (any_substantive | any_uncertain))
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to  = "Pattern",
+    values_to = "N"
+  ) %>%
+  mutate(
+    pct_total = N / N[Pattern == "Total responses"] * 100,
+    pct_substantive = dplyr::if_else(
+      Pattern %in% c(
+        "Total digital", "Total substantive", "Total responses",
+        "Don't know only", "Prefer not to say only", "Location + uncertainty"
+      ),
+      NA_real_,
+      N / N[Pattern == "Total substantive"] * 100
+    )
+  )
+
+# print output
+patterns %>%
+  gt() %>%
+  fmt_number(columns = N, decimals = 0, sep_mark = ",") %>%
+  fmt_number(columns = c(pct_total, pct_substantive), decimals = 1) %>%
+  cols_label(
+    Pattern        = "Location Pattern",
+    N              = "Weighted N",
+    pct_total      = "% of Total",
+    pct_substantive= "% of Substantive"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightgray"),
+    locations = cells_body(
+      rows = Pattern %in% c("Total digital", "Total substantive", "Total responses")
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "Children could select multiple locations. Digital includes social media and online games.",
+    locations = cells_column_labels(columns = Pattern)
+  )
+```
+
+
+## Location of Technology-Facilitated CSEA Incidents (Heatoplots)
+```{r place data}
+#| fig-width: 11
+#| fig-height: 8
+
+# select location variables 
+place_list <- c(
+  "inperson_",
+  "socialmedia_",
+  "onlinegame_",
+  "someoway_",
+  "pnotsay_",
+  "dontknow_"
+)
+
+# relabel variables
+place_labels <- c(
+  socialmedia = "On Social media",
+  inperson = "In person (face-to-face)",
+  onlinegame = "In an online game",
+  someoway = "Some other way",
+  pnotsay = "Prefer not to say",
+  dontknow = "Don't know"
+)
+
+# apply heatplot function 
+place_data <- heatplot_wrangling(ocsea_df, place_list, place_labels)
+place_plot <- heatplot(place_data)
+place_plot
+
+# convert to table
+place_table <- place_data  %>%
+  select(place, type, Proportion) %>%
+  mutate(Proportion = paste0(round(Proportion * 100, 1), "%")) %>%
+  pivot_wider(
+    names_from = place,
+    values_from = Proportion
+  )
+
+kable(place_table, format = "html", escape = TRUE)
+
+# save heatplot
+ggsave(
+  "place_plot.pdf", 
+  place_plot, 
+  width = 10, 
+  height = 6, 
+  dpi =300
+  )
+```
+
+## Perpetrator Identity in Technology-Facilitated CSEA Incidents
+```{r perp data}
+#| fig-width: 11
+#| fig-height: 8
+
+# select variables 
+perp_list <- c(
+  "known_",
+  "knownr_",
+  "knowno_",
+  "knowno2_",
+  "unknown_",
+  "unknown2_",
+  "unknown3_",
+  "perpnotsay_"
+)
+# relabel Perpetrator Identity variables
+perp_labels <- c(
+  knowno2 = "Known other (under 18)",
+  knowno = "Known other (18 or older)",
+  unknown = "Unknown person",
+  unknown2 = "Other known/unknown person",
+  unknown3 = "Identity not known",
+  known = "Family member",
+  knownr = "Romantic partner or ex",
+  perpnotsay = "Prefer not to say"
+)
+
+
+# heatplot function 
+perp_data <- heatplot_wrangling(ocsea_df, perp_list, perp_labels)
+perp_plot <- heatplot(perp_data)
+perp_plot
+
+# convert to table
+perp_table <- perp_data  %>%
+  select(place, type, Proportion) %>%
+  mutate(Proportion = paste0(round(Proportion * 100, 1), "%")) %>%
+  pivot_wider(
+    names_from = place,
+    values_from = Proportion
+  )
+
+kable(perp_table, format = "html", escape = TRUE)
+
+ggsave(
+  "perp_plot.pdf", 
+  perp_plot, 
+  width = 14, 
+  height = 10, 
+  dpi =300
+  )
+```
+
+## Checking the Perpetrator variable overlap
+We created a categorical measure of perpetrator identity with four distinct levels based on children's responses to the OCSEA (Online Child Sexual Exploitation and Abuse) module of the survey (see Figure 2). The four categories are:
+- Unknown: the perpetrator was a stranger or someone the child did not know prior to the incident.
+- Known romantic: the perpetrator was romantically associated with the child, such as a current or former boyfriend/girlfriend.
+- Known family: the perpetrator was a member of the child’s family.
+- Known other: the perpetrator was otherwise known to the child, such as a friend, peer, or acquaintance.
+These categories were derived by grouping individual binary perpetrator identity indicators into a combined variable reflecting any combination of the four perpetrator types
+```{r perp data-wranling}
+
+# pivot perpetrator variables into long format
+ocsea_long <- ocsea_df %>%
+  pivot_longer(
+    cols = matches("^(known|unknown)"),  
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# recode variables into 4 perpetrator categories
+DH_long <- ocsea_long %>%
+  filter(value == 1 & victim == 1) %>%  
+  mutate(Type = case_when(
+    grepl("^knowno2?_", variable) ~ "other",    
+    grepl("^unknown\\d*_", variable) ~ "unknown",
+    grepl("^knownr_", variable) ~ "romantic",
+    grepl("^known_", variable) ~ "family",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(Type)) %>%
+  group_by(CBU_ID, Type) %>%
+  summarise(
+    Score = as.integer(any(value == 1)),  
+    .groups = "drop"
+  )
+
+# pivot to wide binary format
+perp_binary <- DH_long %>%
+  pivot_wider(
+    names_from = Type,
+    values_from = Score,
+    values_fill = list(Score = 0)
+  ) %>%
+  distinct()
+
+# Merge back into main dataset by ID
+ocsea_df <- ocsea_df %>%
+  left_join(perp_binary, by = "CBU_ID")
+
+# create 4-level main perpetrator type variable 
+# (unknown > romantic > family > other)
+ocsea_df <- ocsea_df %>%
+  rowwise() %>%
+  mutate(
+    Perp = case_when(
+      unknown == 1 ~ "unknown",
+      romantic == 1 ~ "romantic",
+      family == 1 ~ "family",
+      other == 1 ~ "other",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  ungroup()
+
+table(ocsea_df$Perp, useNA = "ifany")
+
+# all combinations of 0/1 across perpetrator types
+ocsea_df <- ocsea_df %>%
+  mutate(perp_pattern = interaction(unknown, romantic, family, other, sep = "_", drop = TRUE))
+```
+
+This shows the substantial overlap in perpetrator types, with a significant proportion of children experiencing abuse involving multiple categories. For example, 227 children (weighted) experienced both unknown and other known perpetrators, and 105 reported unknown, romantic, and other perpetrators. This overlap limits the construction of mutually exclusive categories, and thus perpetrator identity was excluded from the model. We therefore analyse perpetrator type descriptively rather than include it as a categorical variable in regression models.
+```{r perp data-wranling2}
+# refresh to ocsea_df
+svy_overall <- survey::svydesign(id = ~1, weights = ~wgt_scaled, data = ocsea_df)
+
+# get weighted frequencies of patterns
+perp_weighted <- svytable(~perp_pattern, svy_overall)
+perp_df <- as.data.frame(perp_weighted) %>%
+  arrange(desc(Freq)) %>%
+  rename(
+    Pattern = perp_pattern,
+    Weighted_frequency = Freq
+  )
+
+perp_df <- perp_df %>%
+  mutate(
+    Types = case_when(
+      Pattern == "1_0_0_0" ~ "Unknown only",
+      Pattern == "0_1_0_0" ~ "Romantic only",
+      Pattern == "0_0_1_0" ~ "Family only",
+      Pattern == "0_0_0_1" ~ "Other only",
+      Pattern == "1_0_0_1" ~ "Unknown + Other",
+      Pattern == "0_1_0_1" ~ "Romantic + Other",
+      Pattern == "0_0_1_1" ~ "Family + Other",
+      Pattern == "1_1_0_1" ~ "Unknown + Romantic + Other",
+      Pattern == "0_1_1_1" ~ "Romantic + Family + Other",
+      Pattern == "1_0_1_1" ~ "Unknown + Family + Other",
+      Pattern == "1_1_1_1" ~ "All four types",
+      Pattern == "1_1_0_0" ~ "Unknown + Romantic",
+      Pattern == "1_0_1_0" ~ "Unknown + Family",
+      Pattern == "0_1_1_0" ~ "Romantic + Family",
+      Pattern == "1_1_1_0" ~ "Unknown + Romantic + Family",
+      Pattern == "0_0_0_0" ~ "No perpetrator reported",
+      TRUE ~ "Other combination"
+    )
+  )
+
+perp_df
+```
+
+## Online Platforms Involved in Technology-Facilitated CSEA Incidents
+```{r pivot platforms}
+
+# prepare platform data 
+allplatforms <- ocsea_df %>%
+  select(wgt_scaled, starts_with("platform_")) %>%
+  select(
+    -ends_with("other"),
+    -ends_with("888"),
+    -ends_with("999")
+  ) %>%
+  pivot_longer(
+    cols = -wgt_scaled, 
+    names_prefix = "platform_"
+  ) %>%
+  
+  # separate CSEA type (a–i) and platform number
+  separate(name, into = c("type", "platform"), sep = "[.]") %>%
+  
+  # keep valid platforms (1 to 17 as per the codebook) 
+  filter(as.numeric(platform) <= 17, !is.na(value)) %>%
+  
+  # apply weights 
+  group_by(type, platform) %>%
+  summarise(Proportion = sum(value * wgt_scaled, na.rm = TRUE) / sum(wgt_scaled[!is.na(value)]),
+             N_unweighted = sum(value == 1, na.rm = TRUE),   
+            .groups = "drop") %>%
+  arrange(-Proportion) %>%
+  mutate(
+    type = recode(
+      type,
+      "a" = "Sexual comments",
+      "b" = "Sexual images",
+      "c" = "Talk about sex",
+      "d" = "Do something sexual",
+      "e" = "Image/video: private parts",
+      "f" = "Money for sexual images/videos",
+      "g" = "Money to meet to do something sexual",
+      "h" = "Shared sexual images without consent",
+      "i" = "Blackmailed for sexual activities"
+    ),
+    platform = recode(
+      platform,
+      `1` = "Facebook or Messenger",
+      `2` = "Twitter",
+      `3` = "Snapchat",
+      `4` = "Instagram",
+      `5` = "TikTok",
+      `6` = "WhatsApp",
+      `7` = "Line",
+      `8` = "YouTube",
+      `9` = "Tumblr",
+      `10` = "Flickr",
+      `11` = "Live.me",
+      `12` = "Periscope",
+      `13` = "Twitch",
+      `14` = "Discord",
+      `15` = "Other",
+      `16` = "Don't know",
+      `17` = "Prefer not to say"
+    )
+  )
+
+```
+
+```{r pivot platforms2}
+# create heatplot for platform-specific CSEA
+allplatforms_heatplot <- function(data) {
+  data <- data %>%
+    mutate(
+      platform = factor(
+        platform,
+        levels = unique(data$platform[order(data$Proportion)])
+      )
+    )
+
+  plot <- ggplot(data, aes(x = platform, y = type)) +
+    geom_raster(aes(fill = Proportion)) +
+    scale_y_discrete(position = "right") +
+    scale_fill_continuous_sequential(
+      palette = "Inferno",
+      begin = 0.06,
+      end = 0.95,
+      name = "Proportion"
+    ) +
+    theme_minimal(base_family = "Helvetica") +
+    theme(
+      axis.text.x = element_text(
+        face = "bold",
+        angle = 75,
+        hjust = 1,
+        vjust = 1,
+        size = 12
+      ),
+      axis.text.y = element_text(
+        face = "bold",
+        size = 10
+      ),
+      legend.position = "bottom",
+      legend.key.size = unit(0.7, "cm"),
+      legend.key.height = unit(0.5, "cm"),
+      legend.key.width = unit(1.5, "cm"),
+      strip.background = element_blank(),
+      panel.spacing = unit(4, "mm"),
+      text = element_text(size = 16, face = "bold")
+    ) +
+    labs(x = "", y = "")
+
+  return(plot)
+}
+
+# apply heatplot function
+plat <- allplatforms_heatplot(allplatforms)
+plat 
+
+full_plat <- allplatforms %>%
+  select(platform, type, Proportion) %>%
+  complete(platform, type)
+
+plat_table <- full_plat %>%
+  mutate(
+    Proportion = ifelse(is.na(Proportion), "0%", paste0(round(Proportion * 100, 1), "%"))
+  ) %>%
+  pivot_wider(
+    names_from = type,
+    values_from = Proportion
+  )
+kable(plat_table, format = "html", escape = TRUE)
+
+ggsave(
+  "plat.pdf", 
+  plat, 
+  width = 14, 
+  height = 10, 
+  dpi =300
+  )
+```
+
+# Variable Recoding
+
+We now select and center all the variables appropriately
+```{r variable recoding}
+#| label: data-victim
+d_victim <- ocsea_df  %>%
+  select(
+    contains("CBU_ID"),
+    starts_with("abuse_"),
+    starts_with("toldnoone_"),
+    starts_with("police_"),
+    starts_with("friend_"),
+    starts_with("helpline_"),
+    starts_with("sworker_"),
+    starts_with("father_"),
+    starts_with("sibling_"),
+    starts_with("mother_"),
+    starts_with("teacher_"),
+    starts_with("other_"),
+    starts_with("othera_"),
+    starts_with("otheropen_"),
+    starts_with("rprefer_"),
+    starts_with("rdontknow_"),
+    contains("unable_"),
+    contains("ashamed_"),
+    contains("disbelief_"),
+    contains("trouble_"),
+    contains("troublefam_"),
+    contains("myfault_"),
+    contains("notserious_"),
+    contains("knowledge_"),
+    contains("troubleother_"),
+    contains("noaction_"),
+    contains("friendsdis_"),
+    contains("parentsdis_"),
+    contains("noconfidential_"),
+    contains("barrierso_"),
+    contains("sex"),
+    contains("wgt_scaled"),
+    contains("age"),
+    contains("sexed"),
+    contains("COUNTRY"),
+    contains("helpseeking"),
+    contains("urbanrural"),
+    contains("digitalskills"),
+    contains("presex"),
+    contains("nindex"),
+    contains("parentmediate"),
+    contains("victim"),
+     contains("victim_all")
+    
+  )  %>%
+  mutate(
+  age = as.numeric(age),
+  age = age - mean(age, na.rm = TRUE),
+  across(
+    c(presex, sexed, helpseeking),
+    ~ factor(., levels = c(0, 1))
+  )
+)
+
+# predictor coding
+contrasts(d_victim$sex) <- c(-0.5, 0.5)
+contrasts(d_victim$presex) <- c(-0.5, 0.5)
+contrasts(d_victim$sexed) <- c(-0.5, 0.5)
+contrasts(d_victim$helpseeking) <- c(-0.5, 0.5)
+```
+
+```{r save, echo = FALSE}
+saveRDS(d_victim, "data-raw/victim_dh.rds") 
+```

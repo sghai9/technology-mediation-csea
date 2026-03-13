@@ -1,0 +1,865 @@
+---
+title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
+authors: Ghai et al.
+subtitle: CSEA Modelling script
+format: 
+  typst:
+    toc: true
+    toc-depth: 2
+  pdf:
+    toc: true
+    toc-depth: 2
+    echo: false
+    number_sections: true
+    fig_caption: true
+    fig_height: 12
+    fig_width: 8
+    latex_engine: xelatex
+    fontsize: 10pt
+    mainfont: "Times New Roman"
+    header-includes:
+      - \usepackage{pdflscape}   
+      - \usepackage{geometry}     
+      - \geometry{margin=1in}     
+      - \usepackage{longtable} 
+      - \usepackage{adjustbox}  
+  html:
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    number_sections: true
+    fig_caption: true
+    css: "styles.css"
+    highlight: "pygments"
+---
+
+# Preface
+
+In this script, we examine whether age, gender, and degree of urbanisation are associated with children’s self-reported experiences of technology-facilitated CSEA. Analyses were not preregistered and are presented as post hoc, exploratory. The data are cross-sectional, so findings are associational. We fit survey-weighted Bayesian logistic models and report results on both the log-odds scale (posterior means with 95% credible intervals) and the response scale as average marginal effects and predicted probabilities.
+
+(1) **Demographic model** (age/gender): We first modelled age–gender patterns in predicting technology-facilitated CSEA using two Bayesian logistic regressions that allow countries to differ in both baseline risk and age/gender gradients. 
+
+(2) **Degree of urbanisation model** (urban, rural and peri-urban): We next estimate two survey-weighted Bayesian logistic models to assess how degree of urbanisation relates to technology-facilitated CSEA, accounting for age, gender, and between-country heterogeneity.
+```{r}
+#| label: options
+#| message: false
+#| cache: false
+
+# Load packages
+library(tidyverse)
+library(rlang)
+library(brms)
+library(cmdstanr)
+library(posterior)
+library(loo)
+library(emmeans)
+library(marginaleffects)
+library(ggdist)
+library(viridis)
+library(RColorBrewer)
+library(scales)
+library(flextable)
+library(officer)
+library(knitr)
+library(kableExtra)
+library(gtsummary)
+library(png)
+library(dplyr)
+library(bayestestR)
+
+knitr::opts_chunk$set(dev = "png")
+
+# Modelling: run brms with cmdstanr maybe with threading
+dir.create("models", FALSE)
+options(
+  brms.backend = "cmdstanr",
+  mc.cores = min(parallel::detectCores(), 8),
+  brms.threads = parallel::detectCores() %/% 4
+)
+# Make plots pretty 
+theme_set(
+  theme_linedraw() +
+    theme(panel.grid = element_blank())
+)
+# Output options
+opts_chunk$set(
+  eval = TRUE,
+  cache = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  echo = knitr::is_html_output()
+)
+options(digits = 2)
+
+# HMC iterations
+ITER <- 2000
+```
+
+We load the cleaned data here 
+```{r, echo=FALSE}
+#| label: load-data-victim
+d_victim <- readRDS("data-raw/victim_dh.rds")
+```
+
+We select only the relevant variables for demographic predictors of technology-facilitated CSEA.
+```{r}
+#| label: mutate-data-victim
+d_victim <- d_victim %>%
+  select(
+    pid = CBU_ID,
+    sex,
+    age,
+    urbanrural,
+    COUNTRY,
+    wgt_scaled,
+    victim,
+    starts_with("abuse_")
+  )
+```
+
+# Demographic Factors Predicting Technology-facilitated CSEA.
+
+## (1) Demographic Model (age/gender)
+- Model 1: First (additive) model includes fixed effects for gender and age without a fixed interaction, letting country-specific random terms capture departures from the pooled pattern. 
+- Model 2: Second (interaction) model adds a global gender×age term to test whether age effects differ systematically by gender after accounting for between-country heterogeneity. Both models use a Bernoulli likelihood with sampling weights (wgt_scaled) and were fit via cmdstanr; compiled objects are saved in models/for reuse.
+```{r}
+#| label: victim-R 
+
+fit_victim_a <- brm(
+  victim | weights(wgt_scaled) ~ sex + age + (sex * age | COUNTRY),
+  data = d_victim,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  iter = ITER,
+  file = "models/brm-victimadd"
+)
+
+fit_victim <- brm(
+  victim | weights(wgt_scaled) ~ sex * age + (sex * age | COUNTRY),
+  data = d_victim,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  iter = ITER,
+  file = "models/brm-victim"
+)
+```
+
+## (2) Degree of urbanisation (urban, rural and peri-urban) model
+
+- Model 1: fit_urban - Random intercepts by country; fixed effects for degree of urbanisation, gender, and age. Tests average urban–peri-urban–rural contrasts after adjusting for age and gender, providing average-country effects (country baselines vary; slopes do not).
+- Model 2: fit_urban2 - Extends Model 1 with flexible age-by-gender terms (age curve with gender interaction) to produce age- and gender-specific risk curves and urban–peri-urban–rural contrasts adjusted for those profiles. 
+```{r}
+fit_urban <- brm(
+  victim | weights(wgt_scaled) ~ sex + age + urbanrural + (1 | COUNTRY),
+  data = d_victim,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  iter = ITER,
+  file = "models/brm-urban"
+)
+
+fit_urban2 <- brm(
+  victim | weights(wgt_scaled) ~ sex * age + urbanrural + (sex * age  | COUNTRY),
+  data = d_victim,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  iter = ITER,
+  file = "models/brm-urban2",
+)
+```
+
+### Results
+
+#### Population-level Effects for All Models Predicting Technology-facilitated CSEA
+
+We first focus on effects for the average country. This table shows numerical summaries (mean, standard deviation, and 95% credible intervals, PD (probability of direction) for population-level parameters.
+```{r}
+#| tbl-cap: Results of the demographic factor model predicting technology-facilitated CSEA (interaction model)
+# Define a function for posterior draws
+summarise_draws_pop0 <- function(fit, variable = c("b_", "sd_", "cor_")) {
+  fit %>%
+    as_draws_df(variable = variable, regex = TRUE) %>%
+    summarise_draws(
+      mean = mean,
+      sd = sd,
+      q2.5 = ~quantile(.x, 0.025),
+      q97.5 = ~quantile(.x, 0.975),
+      pd    = ~max(mean(.x > 0), mean(.x < 0))
+    )
+} 
+
+
+# Recode variable
+labels0 <- c(
+  "b_sex1" = "Girls (vs Boys)",
+  "b_age" = "Age",
+  "b_sex1:age" = "Age:Gender interaction",
+  "b_urbanruralRural" = "Rural",
+  "b_urbanruralUrban" = "Urban"
+)
+
+## fit_victim 
+summarise_draws_pop0(fit_victim, variable = "b_") %>%
+       filter(variable != "b_Intercept") %>%
+  mutate(
+  variable = dplyr::recode(variable, !!!labels0),
+  pd = if_else(
+    pd == 1,
+    "> 99.9%",
+    percent(pd, accuracy = 0.01)
+  )
+  ) %>%
+  kable(col.names = c("Parameter", "Mean", "SD", "2.5% CI", "97.5% CI", "PD > 0)"))
+```
+
+```{r}
+#| label: tbl-victim-res
+#| tbl-cap: Results of the demographic factor model predicting technology-facilitated CSEA (additive model)
+## fit_victim_a 
+summarise_draws_pop0(fit_victim_a, variable = "b_") %>%
+       filter(variable != "b_Intercept") %>%
+  mutate(
+  variable = dplyr::recode(variable, !!!labels0),
+  pd = if_else(
+    pd == 1,
+    "> 99.9%",
+    percent(pd, accuracy = 0.01)
+  )
+  ) %>%
+  kable(col.names = c("Parameter", "Mean", "SD", "2.5% CI", "97.5% CI", "PD > 0)"))
+```
+
+```{r}
+#| tbl-cap: Results of degree of urbanisation model 1 predicting technology-facilitated CSEA 
+## fit_urban 
+summarise_draws_pop0(fit_urban, variable = "b_") %>%
+       filter(variable != "b_Intercept") %>%
+  mutate(
+  variable = dplyr::recode(variable, !!!labels0),
+  pd = if_else(
+    pd == 1,
+    "> 99.9%",
+    percent(pd, accuracy = 0.01)
+  )
+  ) %>%
+  kable(col.names = c("Parameter", "Mean", "SD", "2.5% CI", "97.5% CI", "PD > 0)"))
+```
+
+```{r}
+#| tbl-cap: Results of degree of urbanisation model 2 predicting technology-facilitated CSEA 
+## fit_urban2
+summarise_draws_pop0(fit_urban2, variable = "b_") %>%
+       filter(variable != "b_Intercept") %>%
+  mutate(
+  variable = dplyr::recode(variable, !!!labels0),
+  pd = if_else(
+    pd == 1,
+    "> 99.9%",
+    percent(pd, accuracy = 0.01)
+  )
+  ) %>%
+  kable(col.names = c("Parameter", "Mean", "SD", "2.5% CI", "97.5% CI", "PD > 0)"))
+```
+
+We next plot the probability of technology-facilitated CSEA conditional on age and sex for the average country
+```{r}
+#| fig-cap: Association between age and probablity of technology-facilitated CSEA for boys and girls for the average country in the sample.
+
+# Function to extract brms_conditional_effects
+ce_ggplot <- function(brms_conditional_effects) {
+  brms_conditional_effects %>%
+    plot(plot = FALSE) %>%
+    .[[1]]
+}
+# Get conditional effects for the age:gender interaction term
+p_victim_pop <- conditional_effects(
+  fit_victim,
+  "age:sex"
+) %>%
+  ce_ggplot()
+
+# Plot
+p_victim_pop +
+  scale_color_brewer(
+    palette = "Set1",
+    aesthetics = c("color", "fill")
+  ) +
+  scale_y_continuous(
+    "Probability of technology-facilitated CSEA",
+    limits = c(0, 0.35)
+  ) +
+  scale_x_continuous(
+    "Age (years)",
+    labels = ~ . + 15
+  ) +
+  theme(
+    legend.title = element_blank()
+  )
+```
+
+### Country-specific effects (Figure 2)
+```{r}
+#| label: fig-victim-country-main
+#| fig-cap: Association between age and probablity of technology-facilitated CSEA victimhood for boys and girls and each country. The countries are sorted from least average technology-facilitated CSEA to greatest.
+
+# Generate conditional effects by country
+p_victim_country <- conditional_effects(
+  fit_victim,
+  "age:sex",
+  conditions = distinct(d_victim, COUNTRY),
+  re_formula = NULL,
+  resolution = 9
+) %>% ce_ggplot()
+
+# Plot
+p_victim_country <- p_victim_country +
+  scale_color_manual(
+    values = c("Girl" = "red", "Boy" = "#4A90E2"),  
+    aesthetics = "color"
+  ) +
+  scale_fill_manual(
+    values = c("Girl" = "red", "Boy" = "#4A90E2"),  
+    aesthetics = "fill"
+  ) +
+  scale_y_continuous(
+    "Probability of technology-facilitated CSEA",
+    limits = c(0, 0.5)
+  ) +
+  scale_x_continuous(
+    "Age (years)",
+    labels = ~ . + 15
+  ) +
+  facet_wrap("COUNTRY") +
+  theme(
+    axis.title.x     = element_text(size = 8, family = "sans"),
+    axis.title.y     = element_text(size = 8, family = "sans"),
+    axis.text.x      = element_text(size = 6, family = "sans"),
+    axis.text.y      = element_text(size = 6, family = "sans"),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 7, family = "sans"),
+    legend.text      = element_text(size = 6, family = "sans"),
+    strip.background = element_rect(fill = "black", colour = "black"),
+    strip.text       = element_text(face = "bold", size = 7, 
+                                    colour = "white", family = "sans")
+  )
+
+# Ordering panels by average level of technology-facilitated CSEA
+p_victim_country$data <- p_victim_country$data %>%
+  mutate(
+    COUNTRY = fct_reorder(COUNTRY, estimate__)
+         )
+p_victim_c <- p_victim_country
+p_victim_c
+
+ggsave(
+  "Figure2.pdf",
+  p_victim_c +
+    theme(
+      axis.title   = element_text(size = 7, family = "sans"),  
+      axis.text    = element_text(size = 6, family = "sans"),
+      strip.text   = element_text(face = "bold", size = 7,
+                                  colour = "white", family = "sans"),
+      legend.text  = element_text(size = 7, family = "sans"),
+      legend.title = element_text(size = 7, family = "sans")
+    ),
+  width  = 18,
+  height = 17,
+  units  = "cm",
+  dpi    = 600
+)
+```
+
+## Predicted probabilities for the age/gender model
+We now build a grid for ages 12 and 17 across all countries by gender and compute response-scale predictions with 95% CIs
+```{r}
+# Prediction grid setup 
+age_offset <- 15
+ages_target <- c(12, 17)
+sex_levels <- levels(d_victim$sex)
+INCLUDE_RE <- TRUE 
+
+# Build prediction grid
+grid <- expand.grid(
+  COUNTRY = sort(unique(d_victim$COUNTRY)),
+  sex     = factor(sex_levels, levels = sex_levels),
+  Age     = ages_target
+)
+
+# Center age around offset
+grid$age <- grid$Age - age_offset
+
+# Predict probabilities on response scale with 95% credible intervals
+fit_out <- fitted(
+  fit_victim,
+  newdata    = grid[, c("COUNTRY", "sex", "age")],
+  re_formula = if (INCLUDE_RE) NULL else NA,
+  scale      = "response",
+  summary    = TRUE,
+  probs      = c(0.025, 0.975),
+  seed = 123
+)
+
+# Combine grid info with predictions
+victim_pred <- cbind(
+  grid[, c("COUNTRY", "Age", "sex")],
+  as.data.frame(fit_out)
+)
+
+victim_pred <- victim_pred %>%
+  rename(
+    Country      = COUNTRY,
+    Sex          = sex,
+    `Lower Bound` = Q2.5,
+    `Upper Bound` = Q97.5
+  )
+
+# Round numeric columns to 3 decimal places
+victim_pred$Estimate      <- round(victim_pred$Estimate, 3)
+victim_pred$`Lower Bound` <- round(victim_pred$`Lower Bound`, 3)
+victim_pred$`Upper Bound` <- round(victim_pred$`Upper Bound`, 3)
+
+# Sort by Country, Age, Gender
+victim_pred <- victim_pred %>%
+  arrange(Country, Age, Sex) %>%
+  select(Country, Age, Sex, Estimate, `Lower Bound`, `Upper Bound`)
+
+row.names(victim_pred) <- NULL
+
+knitr::kable(
+  victim_pred,
+  row.names = FALSE,
+  col.names = c("Country", "Age", "Sex", "Estimate", "Lower Bound", "Upper Bound")
+) %>%
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+write.csv(
+  victim_pred,
+  file      = "predicted_victim_probabilities.csv",
+  row.names = FALSE
+)
+```
+
+We now plot the model parameters for each country. Posterior densities of country-specific coefficients (Girl vs Boy, Age, Gender by Age) with a zero reference line. Intervals excluding zero suggest stronger evidence; near-zero centers imply weak/no evidence.
+```{r}
+#| label: fig-victim-country-parameters
+#| fig-cap: Country-specific age and sex coefficients' posterior densities.
+
+# Function to extract tidy posterior samples of country-level coefficients
+coef_tidy <- function(fit, g = "COUNTRY") {
+  coef_country <- coef(fit, summary = FALSE)[[g]]
+  
+  purrr::map(
+    seq_len(dim(coef_country)[3]),
+    ~ coef_country[, , .x] %>%
+      posterior::as_draws_df() %>%
+      mutate(Parameter = dimnames(coef_country)[[3]][.x]) %>%
+      pivot_longer(
+        cols = -c(Parameter, starts_with(".")),
+        names_to = "Country"
+      )
+  ) %>%
+    bind_rows()
+}
+
+coef_df <- coef_tidy(fit_victim) %>%
+  filter(Parameter != "Intercept")
+
+# Recode parameter names 
+coef_df <- coef_df %>%
+  mutate(
+
+    Parameter_clean = case_when(
+      Parameter %in% c("sexGirl", "sex1") ~ "Girl vs Boy",
+      Parameter == "age" ~ "Age",
+      Parameter %in% c("sexGirl:age", "sex1:age") ~ "Gender × Age",
+      TRUE ~ Parameter
+    ),
+    Country = forcats::fct_reorder(Country, value, .fun = median)
+  )
+
+
+# Plot
+p_victim_country_params <- ggplot(coef_df) +
+  aes(
+    x = value,
+    y = Country,
+    fill  = Parameter_clean,
+    color = Parameter_clean
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dotted",
+    linewidth = 0.25,
+    color = "gray40"
+  ) +
+  ggdist::stat_slabinterval(
+    .width = c(0.8, 0.95),
+    normalize = "panels",
+    alpha = 0.9
+  ) +
+  scale_color_manual(
+  name = "Parameter",
+  values = c(
+    "Girl vs Boy"   = "#2C105C",  
+    "Age"           = "#B63679",  
+    "Gender × Age"  = "#F98E09"   
+  )
+  ) +
+  scale_fill_manual(
+  name = "Parameter",
+  values = c(
+    "Girl vs Boy"   = "#2C105C",
+    "Age"           = "#B63679",
+    "Gender × Age"  = "#F98E09")
+  ) +
+  scale_x_continuous("Parameter Value (log-odds scale)") +
+  facet_wrap(~ Parameter_clean, 
+             scales = "free_x", 
+             ncol = 3
+             ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "none",
+    strip.background = element_rect(fill = "black", colour = "black"),
+    strip.text = element_text(face = "bold", size = 11, colour = "white")
+  )
+
+p_victim_country_params
+
+ggsave(
+  filename = "figure_victim_country_parameters.pdf",
+  plot = p_victim_country_params,
+  width = 10,
+  height = 8,
+  units = "in",
+  dpi = 300
+)
+```
+
+## Age Contrast (17 vs 12)
+```{r}
+# Extract posterior draws
+draws <- as_draws_df(fit_victim, variable = "b_", regex = TRUE)
+
+# Overall age contrast (17 vs 12) = b_age * 5
+draws <- draws %>%
+  mutate(contrast_age_17v12 = b_age * 5)
+
+# Summary
+mean_qi(draws$contrast_age_17v12, .width = 0.95)
+p_direction(draws$contrast_age_17v12)
+```
+
+## Equivalence Testing for Sex Differences
+```{r}
+# Extract posterior draws for sex
+draws <- as_draws_df(fit_victim)
+sex_draws <- draws$b_sex1
+
+# Posterior summary
+cat("Posterior mean:", round(mean(sex_draws), 3), "\n")
+cat("95% CrI:", round(quantile(sex_draws, 0.025), 3), 
+    round(quantile(sex_draws, 0.975), 3), "\n")
+
+# ROPE equivalence test
+rope_lower <- log(0.67)
+rope_upper <- log(1.5)
+in_rope <- mean(sex_draws >= rope_lower & sex_draws <= rope_upper) * 100
+cat(sprintf("ROPE bounds: [%.2f, %.2f]\n", rope_lower, rope_upper))
+cat(sprintf("%.1f%% of posterior in ROPE\n", in_rope))
+
+# Probability of direction
+pd <- max(mean(sex_draws > 0), mean(sex_draws < 0)) * 100
+cat(sprintf("Probability of direction: %.1f%%\n", pd))
+
+# Cross-check with fixef
+fixef(fit_victim)["sex1", ]
+```
+
+## Average marginal effects (1) age and gender demographic model
+We now look at average marginal effects (age contrasted at one-unit increase and gender Girl/Boy)
+```{r}
+ avg_fitvictim <- avg_comparisons(
+  fit_victim,
+  re_formula = NULL
+) %>%
+  inferences(method = "delta")
+```
+
+```{r}
+ # Format table
+ame_victim_tbl <- avg_fitvictim %>%
+  as_tibble() %>%
+  mutate(
+    Label = dplyr::case_when(
+      !is.na(contrast) & term == "sex" ~ "Girl vs Boy",
+      is.na(contrast) & term == "age"  ~ "Age (+1 year)",
+      TRUE ~ ifelse(is.na(contrast), term, paste0(term, ": ", contrast))
+    ),
+    `Difference (pp)` = sprintf("%.1f", estimate * 100),
+    `95% CI`          = sprintf("[%.1f, %.1f]", conf.low * 100, conf.high * 100)
+  ) %>%
+  select(Label, `Difference (pp)`, `95% CI`)
+
+
+kable(
+  ame_victim_tbl,
+  booktabs = TRUE,
+  align = c("l","r","r"),
+  col.names = c("Contrast", "Difference (pp)", "95% CI")
+) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover","condensed"))
+```
+
+## Leave-one-out cross-validation (victim models)
+We compared two Bayesian logistic models of technology-facilitated CSEA: an additive model with main effects for age and sex, and a model that also included the age×sex interaction. For each model we computed leave-one-out cross-validation (LOO) using Pareto-smoothed importance sampling (Vehtari, Gelman, and Gabry, 2017). To avoid recomputation, we save the combined LOO output to disk and reuse it on subsequent runs.
+```{r}
+# Compare two Bayesian logistic victim models 
+path <- file.path("models", "loosvictime.rds")
+
+if (!file.exists(path)) {
+  loosvictime <- brms::loo(
+    # additive: gender + age
+    fit_victim_a,  
+     # interaction: gender * age
+    fit_victim,   
+    compare = TRUE,
+    model_names = c("Additive (gender + age)", "Interaction (gender × age)")
+  )
+  saveRDS(loosvictime, path)
+}
+loosvictime <- readRDS(path)
+
+# Compute individual LOO
+loo_add <- brms::loo(fit_victim_a)  
+loo_int <- brms::loo(fit_victim)  
+```
+
+
+## Pareto-k vector
+Alongside the overall LOO scores, we examined the Pareto-k diagnostics, which quantify how influential each held-out observation is in the PSIS approximation. For each model we report: the number of observations, the largest k value, how many (and what percent) exceed 0.7 (potentially problematic), and how many exceed 1.0 (problematic). This gives a quick sense of whether PSIS-LOO is reliable for these data or whether a more robust validation (e.g., K-fold) might be warranted.
+```{r}
+# Extract Pareto-k values to assess PSIS 
+get_k <- function(loo_obj) {
+  as.numeric(loo_obj$diagnostics$pareto_k)
+}
+
+# Summarise Pareto-k diagnostics
+pareto_summary <- function(k) {
+  tibble(
+    n          = length(k),
+    max_k      = max(k, na.rm = TRUE),
+    n_gt_0.7   = sum(k > 0.7, na.rm = TRUE),
+    pct_gt_0.7 = round(100 * mean(k > 0.7, na.rm = TRUE), 1),
+    n_gt_1.0   = sum(k > 1.0, na.rm = TRUE),
+    pct_gt_1.0 = round(100 * mean(k > 1.0, na.rm = TRUE), 1)
+  )
+}
+
+
+ # additive model
+k_add <- get_k(loo_add) 
+# interaction model
+k_int <- get_k(loo_int)  
+
+# Extract Pareto-k values for both models
+ps_add <- pareto_summary(k_add) %>% mutate(Model = "Additive (gender + age)") 
+ps_int <- pareto_summary(k_int) %>% mutate(Model = "Interaction (gender × age)")
+
+pareto_output <- bind_rows(ps_add, ps_int) %>% 
+  select(Model, n, max_k, n_gt_0.7,  pct_gt_0.7, n_gt_1.0, pct_gt_1.0)
+
+kable(
+  pareto_output,
+  booktabs = TRUE,
+  align = c("l","r","r","r","r","r","r"),
+  col.names = c("Model","N","max k","n > 0.7","% > 0.7","n > 1.0","% > 1.0")
+) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover","condensed"))
+```
+
+## Plot leave-one-out cross-validation
+We then contrasted the two models using the difference in expected log predictive density (ΔELPD) from loo_compare. The figure shows ΔELPD for each model with a 1-SE error bar, plotted horizontally for readability and centered on a dashed zero line. Positive values indicate better out-of-sample predictive performance.
+```{r}
+# Plot LOO Comparison 
+victim_loo <- loo::loo_compare(list(
+  "Interaction (gender × age)" = loo_int,
+  "Additive (gender + age)"    = loo_add
+))
+
+victim_loo_df <- as.data.frame(victim_loo) %>%
+  tibble::rownames_to_column("Model")
+
+# ΔELPD plot with standard error bars
+plotvictim_loo <- ggplot(victim_loo_df, aes(x = reorder(Model, elpd_diff), y = elpd_diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
+  geom_point(size = 3, color = "firebrick") +
+  geom_errorbar(
+    aes(ymin = elpd_diff - se_diff, ymax = elpd_diff + se_diff),
+    width = 0.2
+  ) +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = expression(Delta ~ ELPD[LOO])
+  ) +
+  theme_minimal(base_size = 13)
+
+plotvictim_loo 
+
+# save figure 
+ggsave(
+filename = "figure_loovic.pdf",
+plot     = plotvictim_loo,
+width    = 6,
+height   = 3.5,
+units    = "in",
+dpi      = 300
+)
+
+```
+
+## Average marginal effects (2) degree of urbanisation
+We computes pairwise average marginal effects (AMEs) for urbanrural on the response scale, reported as percentage-point (pp) differences. AMEs are obtained with avg_comparisons() from fit_urban2 and, with re_formula = NA, are population-averaged over random effects (i.e., not conditional on a specific country intercept). Estimates reflect survey weighting from the fitted model.
+```{r}
+# AMEs
+ame_urbanrural <- avg_comparisons(
+  fit_urban2,
+  variables = list(urbanrural = "pairwise"),
+  re_formula = NULL
+)
+ame_urbanrural
+```
+Each contrast is the average change in predicted prevalence when moving between levels of degree of urbanisation (e.g., Urban vs Rural). Here we holds the model’s covariate distribution constant.
+```{r}
+pairwise_urban <- ame_urbanrural  %>%
+  as_tibble() %>%
+  mutate(
+    Comparison = contrast,
+    `Difference (pp)` = sprintf("%.1f", estimate * 100),
+    `95% CI` = sprintf("[%.1f, %.1f]", conf.low * 100, conf.high * 100)
+  ) %>%
+  select(Comparison, `Difference (pp)`, `95% CI`)
+
+kable(
+  pairwise_urban,
+  align = c("l","r","r"),
+  col.names = c("Comparison", "Difference (pp)", "95% CI"),
+  booktabs = TRUE
+) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped","hover","condensed"))
+```
+
+## Predicted prevalence of degree of urbanisation
+We compute COUNTRY × urbanrural marginal predictions using emmeans, which returns prevalence on the response scale with 95% CIs. Estimates are survey-weighted, contrast urban, peri-urban and rural within each countr and are marginalised over covariates in the fitted model (e.g., age, gender). 
+```{r}
+#| label: tbl-urbanrural-prevalence
+#| tbl-cap: "Predicted prevalence of technology-facilitated CSEA by degree of  urbanisation (Rural, Peri-urban, Urban), with 95% credible intervals.Values are posterior means from the Bayesian regression; intervals are 95% CIs. Panels in the corresponding figure correspond to countries."
+
+# build emmeans
+rg <- ref_grid(fit_urban2, re_formula = NULL, type = "response")
+
+emm <- emmeans(
+  fit_urban2,
+  ~ COUNTRY:urbanrural,
+  re_formula = NULL,
+  type       = "response"
+)
+
+df <- as.data.frame(emm)
+
+val_col   <- intersect(c("prob", "response", "emmean", "rate"), names(df))[1]
+lower_col <- intersect(c("lower.CL", "asymp.LCL", "lower.HPD"), names(df))[1]
+upper_col <- intersect(c("upper.CL", "asymp.UCL", "upper.HPD"), names(df))[1]
+
+# predicted means and intervals
+pred_urban_w <- df %>%
+  transmute(
+    COUNTRY,
+    urbanrural = factor(urbanrural, levels = c("Rural","Peri urban","Urban")),
+    mean  = .data[[val_col]],
+    lower = .data[[lower_col]],
+    upper = .data[[upper_col]]
+  ) %>%
+  arrange(COUNTRY, urbanrural)
+
+# formatted table 
+pred_urban <- pred_urban_w %>%
+  mutate(
+    `Mean %`  = scales::percent(mean,  0.1),
+    `95% CI` = sprintf("[%s, %s]",
+                        scales::percent(lower, 0.1),
+                        scales::percent(upper,  0.1))
+  ) %>%
+  select(
+    COUNTRY,
+    `Degree of urbanization` = urbanrural,
+    `Mean %`, `95% CI`
+  )
+
+kable(
+  pred_urban,
+  booktabs = TRUE,
+  align = c("l", "l", "r", "r")
+) %>%
+  kable_styling(full_width = FALSE) %>%
+  collapse_rows(columns = 1, valign = "top")
+```
+
+## Plotting predicted prevalence by degree of urbanisation 
+For each country, we compare predicted prevalence across rural, peri-urban, urban with 95% credible intervals, adjusted for demographics (and survey weights via the fitted Bayesian model), to show cross-country heterogeneity in urbanisation gradients.
+
+```{r}
+#| label: fig-urbanrural-prevalence
+#| fig-cap: "Predicted prevalence of technology-facilitated CSEA by degree of urbanisation (Rural, Peri-urban, Urban), with 95% credible intervals. Points indicate posterior means and vertical bars the 95% CI from the Bayesian regression; panels correspond to countries."
+
+# plot urban rural diff
+urbanrural_plot <- ggplot(
+  pred_urban_w,
+  aes(x = urbanrural, y = mean, ymin = lower, ymax = upper, color = urbanrural)
+) +
+  geom_pointrange(size = 0.7) +
+  facet_wrap(~ COUNTRY, ncol = 4) +
+  scale_y_continuous(
+    "Predicted prevalence of technology-facilitated CSEA",
+    labels = scales::label_percent(accuracy = 0.1),
+    expand = expansion(mult = c(0, 0.03))
+  ) +
+  scale_x_discrete("Degree of Urbanization") +
+  scale_color_viridis_d(option = "inferno", begin = 0.2, end = 0.9) +
+  guides(color = "none") +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.background = element_rect(fill = "black", color = "black"),
+    strip.text = element_text(color = "white", face = "bold", size = 11,
+                              margin = margin(t = 2, b = 2)),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing = unit(6, "pt"),
+    plot.margin = margin(6, 10, 6, 10)
+  )
+
+urbanrural_plot
+
+# save figure 
+ggsave(
+  "urbanrural_plot.pdf", 
+  urbanrural_plot,
+  width = 12, 
+  height = 14, 
+  dpi = 600
+)
+```

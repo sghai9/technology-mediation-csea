@@ -1,0 +1,1328 @@
+---
+title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
+authors: Ghai et al.
+subtitle: Disclosure descriptives script
+format: 
+  typst:
+    toc: true
+    toc-depth: 2
+  pdf:
+    toc: true
+    toc-depth: 2
+    echo: false
+    number_sections: true
+    fig_caption: true
+    fig_height: 12
+    fig_width: 8
+    latex_engine: xelatex
+    fontsize: 10pt
+    mainfont: "Times New Roman"
+    header-includes:
+      - \usepackage{pdflscape}   
+      - \usepackage{geometry}     
+      - \geometry{margin=1in}     
+      - \usepackage{longtable} 
+      - \usepackage{adjustbox}  
+  html:
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    number_sections: true
+    fig_caption: true
+    css: "styles.css"
+    highlight: "pygments"
+---
+
+## Disclosure of Technology-facilitated CSEA
+
+### Analysis Overview
+
+We examined disclosure patterns and barriers following technology-facilitated CSEA through three sets of analyses.
+
+**1. Disclosure Patterns**: We examined who children told about their experiences and whether they disclosed at all. We show a) non-mutually exclusive disclosure rates to different channels (police, helpline, social worker, teacher, friend, sibling, mother, father, other trusted adults), b) Mutually exclusive disclosure rates: no disclosure, informal channels only (family/friends), formal channels only (authorities), or both and c) a heatmap showing disclosure rates for nine CSEA experience types across all channels.
+
+**2. Barriers to Disclosure**: Among children who did not disclose, we analyzed self-reported barriers, including overall prevalence: weighted proportions and 95% confidence intervals for 13 barriers using Wilson score intervals. We produce a two-panel figure showing both overall barriers with confidence intervals, and (b) barrier by CSEA type.
+
+**3. Barrier Overlap**: We conducted co-occurrence analysis among non-disclosed incidents to examine whether barriers cluster or operate independently, including a) Distribution of barrier multiplicity (how many barriers per incident) and b) Full 13×13 co-occurrence matrix heatmap (diagonal = individual prevalence, off-diagonal = joint occurrence)
+
+```{r, echo=FALSE}
+#| label: load-data-victim
+
+d_victim <- readRDS("data-raw/victim_dh.rds")
+```
+
+## Setup
+```{r setup}
+#| label: options
+#| message: false
+#| cache: false
+
+## load packages 
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(scales)
+library(gtsummary)
+library(kableExtra)
+library(patchwork)
+library(flextable)
+library(viridis)
+library(officer) 
+```
+
+We select only the relevant variables for disclosure analyses
+```{r}
+#| label: mutate-data-victim
+# pull out disclosure variables 
+d_disclose <- d_victim %>%
+  select(
+    CBU_ID,
+    COUNTRY,
+    wgt_scaled,
+    sex,
+    age,
+    victim,
+    # all the disclose/abuse variables
+    starts_with("toldnoone_"),
+    starts_with("abuse_"),
+    starts_with("police_"),
+    starts_with("helpline_"),
+    starts_with("teacher_"),
+    starts_with("sworker_"),
+    starts_with("friend_"),
+    starts_with("sibling_"),
+    starts_with("father_"),
+    starts_with("mother_"),
+    starts_with("other_"),
+    starts_with("othera_"),
+    starts_with("otheropen_"),
+    starts_with("rdontknow_"),
+    starts_with("rprefer_"),
+    ## barriers 
+    contains("unable_"),
+    contains("ashamed_"),
+    contains("disbelief_"),
+    contains("trouble_"),
+    contains("troublefam_"),
+    contains("myfault_"),
+    contains("notserious_"),
+    contains("knowledge_"),
+    contains("troubleother_"),
+    contains("noaction_"),
+    contains("friendsdis_"),
+    contains("parentsdis_"),
+    contains("noconfidential_"),
+    contains("barrierso_")
+  )
+# names(d_disclose)
+```
+
+## Define labels
+```{r disclosure-labels}
+
+# CSEA type mappings (used throughout)
+csea_type_labels <- c(
+  "a" = "Unwanted sexual comments",
+  "b" = "Sent unwanted sexual images",
+  "c" = "Asked to talk about sex/acts",
+  "d" = "Asked to do something sexual",
+  "e" = "Asked for intimate photos/videos",
+  "f" = "Offered money/gifts for images",
+  "g" = "Offered money/gifts for in-person acts",
+  "h" = "Shared sexual images without consent",
+  "i" = "Threatened/blackmailed for sex"
+)
+
+# disclosure channel labels
+channel_labels <- c(
+  "police"    = "Police",
+  "helpline"  = "Helpline",
+  "sworker"   = "Social Worker",
+  "friend"    = "Friend",
+  "teacher"   = "Teacher",
+  "mother"    = "Mother",
+  "father"    = "Father",
+  "sibling"   = "Sibling",
+  "other"     = "Other",
+  "othera"    = "Other Adults",
+  "toldnoone" = "Did not disclose"
+)
+
+# barrier name prefixes (variable stems)
+barrier_prefixes <- c(
+  "unable", "ashamed", "disbelief", "trouble", "myfault", 
+  "notserious", "troubleother", "troublefam", "noaction", 
+  "knowledge", "friendsdis", "parentsdis", "noconfidential"
+)
+
+# functions that need barrier_list 
+barrier_list <- paste0(barrier_prefixes, "_")
+
+# barrier labels - full descriptions
+barrier_labels <- c(
+  "unable"        = "Did not know where to go/who to tell",
+  "ashamed"       = "Embarrassed/ashamed/too difficult",
+  "disbelief"     = "Thought no one would believe me",
+  "trouble"       = "Worried I would get in trouble",
+  "myfault"       = "Felt I did something wrong",
+  "notserious"    = "Did not think it was serious enough",
+  "troubleother"  = "Did not want perpetrator in trouble",
+  "troublefam"    = "Feared trouble for me/family",
+  "noaction"      = "Did not think anything would be done",
+  "knowledge"     = "Did not know you could report",
+  "friendsdis"    = "Friends discouraged reporting",
+  "parentsdis"    = "Parents discouraged reporting",
+  "noconfidential"= "Feared lack of confidentiality"
+)
+
+# short barrier labels for visualizations
+short_labels <- c(
+  "unable"        = "Don't know",
+  "ashamed"       = "Embarrassed/\nashamed",
+  "disbelief"     = "Won't\nbelieve me",
+  "trouble"       = "Get in\ntrouble",
+  "myfault"       = "My fault",
+  "notserious"    = "Not serious",
+  "troubleother"  = "Perp in\ntrouble",
+  "troublefam"    = "Family\ntrouble",
+  "noaction"      = "Nothing\ndone",
+  "knowledge"     = "Didn't know\ncould report",
+  "friendsdis"    = "Friends\ndiscouraged",
+  "parentsdis"    = "Parents\ndiscouraged",
+  "noconfidential"= "No\nconfidential"
+)
+
+# channel phrases for the text summary (overall_channels)
+channel_phrase <- c(
+  toldnoone = "did not disclose",
+  police    = "told police",
+  helpline  = "contacted helpline",
+  sworker   = "told social worker",
+  friend    = "told friends",
+  teacher   = "told teachers",
+  mother    = "told mothers",
+  father    = "told fathers",
+  sibling   = "told siblings",
+  othera    = "told other adults",
+  other     = "other channels"
+)
+
+# used throughout code
+label_csea_type <- function(x) unname(csea_type_labels[x])
+label_channel   <- function(x) unname(channel_labels[x])
+label_barrier   <- function(x) unname(barrier_labels[x])
+label_barrier_short <- function(x) unname(short_labels[x])
+
+```
+
+# Disclosure Patterns Analysis
+## Data Wrangling
+
+To examine patterns of disclosure following technology-facilitated CSEA, we first derived a disclosure dataset from the main CSEA dataset. This involved aggregating responses across the nine types of technology-facilitated CSEA (labeled abuse_a to abuse_i) and identifying whether children disclosed any of these experiences to various sources.We defined a function to generate a binary disclosure indicator for each reporting channel (e.g., police, sibling, helpline). This indicator captures whether a child reported any of the nine types of CSEA to that particular channel.
+
+To explore how the nature of the disclosure may be associated with disclosure, we constructed three summary variables based on who the child disclosed:
+
+- Told all (any disclosures): A binary variable coded as 1 if the child reported disclosing any form of technology-facilitated CSEA to at least one of the following sources: (1. Father, step/foster father, or male caregiver/guardian; 2. Mother, step/foster mother, or female caregiver/guardian; 3. Brother or sister; 4. Friend; 5. Teacher or educator; 6. Other adults I know and trust, 7. Social worker; 8. Helpline; 9. Police; 10. Other). 
+
+Children who selected only “I didn’t tell anyone,” “Prefer not to say,” or “Don’t know” were excluded from the "told all" category.
+
+- Told informal channel: A binary variable indicating disclosure to non-authority figures, such as parents, siblings, or friends.
+- Told formal channel: A binary variable indicating disclosure to authority figures, including teachers, helplines, social workers, or police.
+
+This creates non-mutually exclusive indicators, allowing us to capture the full complexity of disclosure patterns where children may tell multiple people.
+```{r disclosure-wrangling}
+
+disclosure_data <- function(data) {
+  
+  # filter victims only
+  victims <- data %>% filter(victim == 1)
+  
+  # disclosure channel names
+  channels <- c("toldnoone", "police", "helpline", "teacher", "sworker", 
+                "friend", "sibling", "father", "mother", "other", "othera")
+  
+  # function to check if disclosed any abuse type to this channel
+  check_channel <- function(prefix, data) {
+    # abuse types are a-i
+    cols <- paste0(prefix, "_", letters[1:9])
+    rowSums(data[cols], na.rm = TRUE) > 0
+  }
+  
+  # apply to each channel
+  for (ch in channels) {
+    victims[[ch]] <- check_channel(ch, victims)
+  }
+  
+  ## create disclosure categories
+  victims %>%
+    mutate(
+      # any disclosure?
+      toldall = police | helpline | teacher | sworker | friend | 
+                 sibling | father | mother | other | othera,
+      # formal vs informal
+      toldformal = police | helpline | teacher | sworker,
+      toldinformal = friend | sibling | father | mother | other | othera,
+      
+      # make mutually exclusive 
+      no_disclosure = !toldall,
+      informal_only = toldinformal & !toldformal,
+      formal_only = toldformal & !toldinformal,
+      both_channels = toldinformal & toldformal,
+      
+      # now factor
+      disclosure_type = case_when(
+        both_channels ~ "Both",
+        informal_only ~ "Informal only",
+        formal_only ~ "Formal only",
+        no_disclosure ~ "None"
+      ),
+      disclosure_type = factor(disclosure_type, 
+                              levels = c("None", "Informal only", "Formal only", "Both"))
+    )
+}
+
+d_report <- disclosure_data(d_disclose)
+```
+
+## 1. Overall Disclosure Rates (Non-Mutually Exclusive)
+
+We first set up the survey design object to properly account for sampling weights in all subsequent analyses. This table shows **non-exclusive** disclosure rates - children who disclosed to multiple channels appear in multiple rows.
+
+```{r, echo = FALSE}
+# list of channels to analyse
+channels <- c(
+  "toldnoone","police","helpline","teacher","sworker",
+  "friend","sibling","father","mother","other","othera"
+)
+```
+
+```{r survey-design, warning = FALSE}
+
+# survey design
+svy_victims <- d_report %>%
+  filter(victim == 1) %>%
+  as_survey_design(weights = wgt_scaled)
+```
+
+```{r disclosure-overall, warning = FALSE}
+# overall channel function
+calc_channel <- function(var) {
+  svy_victims %>%
+    summarise(
+      p             = survey_mean(as.numeric(.data[[var]] == 1), vartype = "ci", na.rm = TRUE),
+      Nw_sel        = survey_total(as.numeric(.data[[var]] == 1), na.rm = TRUE),
+      Nw_denom      = survey_total(as.numeric(!is.na(.data[[var]])), na.rm = TRUE),
+      n_select_unw  = unweighted(sum(.data[[var]] == 1, na.rm = TRUE)),
+      n_nonmiss_unw = unweighted(sum(!is.na(.data[[var]])))
+    ) %>%
+    mutate(
+      COUNTRY  = "Overall",
+      channel  = var,
+      pct      = p * 100,
+      pct_low  = p_low * 100,
+      pct_upp  = p_upp * 100
+    ) %>%
+    select(COUNTRY, channel, pct, pct_low, pct_upp,
+           n_select_unw, n_nonmiss_unw, Nw_sel, Nw_denom)
+}
+
+# by country channel function
+calc_channel_country <- function(var) {
+  svy_victims %>%
+    group_by(COUNTRY) %>%
+    summarise(
+      p             = survey_mean(as.numeric(.data[[var]] == 1), vartype = "ci", na.rm = TRUE),
+      Nw_sel        = survey_total(as.numeric(.data[[var]] == 1), na.rm = TRUE),
+      Nw_denom      = survey_total(as.numeric(!is.na(.data[[var]])), na.rm = TRUE),
+      n_select_unw  = unweighted(sum(.data[[var]] == 1, na.rm = TRUE)),
+      n_nonmiss_unw = unweighted(sum(!is.na(.data[[var]])))
+    ) %>%
+    mutate(
+      channel  = var,
+      pct      = p * 100,
+      pct_low  = p_low * 100,
+      pct_upp  = p_upp * 100
+    ) %>%
+    select(COUNTRY, channel, pct, pct_low, pct_upp,
+           n_select_unw, n_nonmiss_unw, Nw_sel, Nw_denom)
+}
+
+# run both and bind
+table_overall <- map_dfr(channels, calc_channel)
+table_country <- map_dfr(channels, calc_channel_country) %>%
+  filter(!is.na(COUNTRY))
+
+# build final table
+disclosure_channel_table <- bind_rows(table_overall, table_country) %>%
+  filter(!is.na(COUNTRY)) %>%
+  mutate(
+    Channel = dplyr::recode(channel,
+      "police"    = "Police",
+      "helpline"  = "Helpline",
+      "sworker"   = "Social Worker",
+      "friend"    = "Friend",
+      "teacher"   = "Teacher",
+      "mother"    = "Mother",
+      "father"    = "Father",
+      "sibling"   = "Sibling",
+      "other"     = "Other",
+      "othera"    = "Other Adults",
+      "toldnoone" = "Did not disclose"
+    ),
+    `n (unweighted)` = n_select_unw,
+    `N (unweighted)` = n_nonmiss_unw,
+    `n (weighted)`   = round(Nw_sel, 0),
+    `N (weighted)`   = round(Nw_denom, 0),
+    `Prevalence (%)` = round(pct, 1),
+    `Lower CI`       = round(pct_low, 1),
+    `Upper CI`       = round(pct_upp, 1)
+  ) %>%
+  select(
+    Country          = COUNTRY,
+    Channel,
+    `n (unweighted)`, `N (unweighted)`,
+    `n (weighted)`,   `N (weighted)`,
+    `Prevalence (%)`, `Lower CI`, `Upper CI`
+  ) %>%
+  arrange(Channel, desc(Country == "Overall"), Country) %>%
+  as.data.frame()
+```
+
+```{r disclosure-tbl}
+disclosure_channel_table %>%
+  kable(
+    booktabs  = TRUE,
+    longtable = TRUE,
+    caption   = "Survey-weighted disclosure rates by channel and country (2020–2021)",
+    align     = c("l", "l", rep("r", 7))
+  ) %>%
+  kable_styling(
+    latex_options = c("striped", "repeat_header", "scale_down"),
+    full_width    = FALSE,
+    font_size     = 9
+  ) %>%
+  collapse_rows(columns = 1, valign = "top")
+```
+
+## 2. Mutually Exclusive Disclosure Categories
+
+We categorize each victim into one mutually exclusive disclosure category to understand overall disclosure behavior patterns.While the previous analysis showed overlap, this classification helps us understand the primary disclosure pathway for each victim. Below are categories:
+
+1. None: Told no one
+2. Informal only: Told family/friends but not authorities
+3. Formal only: Told authorities but not family/friends  
+4. Both: Told both informal and formal channels
+```{r disclosure-mutually-exclusive}
+
+# survey design object
+svy <- d_report %>% as_survey_design(weights = wgt_scaled)
+
+# calc patterns by country
+m_disclosure <- svy %>%
+  group_by(COUNTRY) %>%
+  summarise(
+    None = survey_mean(no_disclosure, vartype = NULL),
+    `Informal only` = survey_mean(informal_only, vartype = NULL),
+    `Formal only` = survey_mean(formal_only, vartype = NULL),
+    Both = survey_mean(both_channels, vartype = NULL)
+  ) %>%
+  pivot_longer(-COUNTRY, names_to = "Category", values_to = "p") %>%
+  mutate(Category = factor(Category, 
+                           levels = c("None", "Informal only", "Formal only", "Both")))
+
+# get any disclosure rates
+any_d <- svy %>%
+  group_by(COUNTRY) %>%
+  summarise(any = survey_mean(toldall, vartype = NULL)) %>%
+  mutate(any_lab = percent(any, accuracy = 1))
+
+# order countries by Both category for vis
+country_order <- m_disclosure %>%
+  filter(Category == "Both") %>%
+  arrange(p) %>%
+  pull(COUNTRY)
+
+m_disclosure <- m_disclosure %>%
+  mutate(
+    COUNTRY = factor(COUNTRY, levels = country_order),
+    pct_lab = percent(p, accuracy = 0.1),
+    show_lab = p >= 0.01  
+  )
+
+any_d <- any_d %>%
+  mutate(COUNTRY = factor(COUNTRY, levels = country_order))
+```
+
+```{r disclosure-figure}
+#| fig-cap: "Mutually exclusive disclosure patterns by country"
+#| fig-width: 11
+#| fig-height: 8
+
+# stacked bar chart
+disclosure_mutualex <- ggplot(m_disclosure, aes(x = COUNTRY, y = p, fill = Category)) +
+  geom_col(width = 0.9, position = "fill", color = "white", linewidth = 0.2) +
+  geom_text(
+    data = filter(m_disclosure, show_lab),
+    aes(label = pct_lab),
+    position = position_fill(vjust = 0.5),
+    size = 3.2, fontface = "bold", color = "white"
+  ) +
+  scale_fill_viridis_d(option = "inferno", begin = 0.15, end = 0.9, direction = -1) +
+  scale_y_continuous(labels = label_percent(), limits = c(0, 1), 
+                     expand = expansion(mult = c(0, 0.02))) +
+  labs(x = NULL, y = "Share of victims", fill = NULL) +
+  coord_flip() +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  ) +
+  geom_point(
+    data = any_d,
+    aes(x = COUNTRY, y = any, shape = "Any disclosure"),
+    inherit.aes = FALSE,
+    size = 2.8, stroke = 0.6, color = "black", fill = "white"
+  ) +
+  geom_text(
+    data = any_d,
+    aes(x = COUNTRY, y = pmin(any + 0.035, 0.98), label = any_lab),
+    inherit.aes = FALSE,
+    size = 3.0, fontface = "bold", color = "black"
+  ) +
+  scale_shape_manual(values = c("Any disclosure" = 21)) +
+  guides(
+    fill = guide_legend(order = 1),
+    shape = guide_legend(order = 2, 
+                        override.aes = list(color = "black", fill = "white", size = 3))
+  )
+
+disclosure_mutualex
+
+ggsave("figure3_disclosure.pdf", 
+       disclosure_mutualex, 
+       width = 11, 
+       height = 8, 
+       dpi = 600
+       )
+```
+
+## 3. Disclosure: CSEA Type by Channel
+
+Now we transform data from person-level to incident-level, where each row represents one child experiencing one specific type of CSEA. 
+```{r disclosure-heatmap-data}
+
+# exact channel stems - order matters to avoid other/othera ambiguity
+channel_stems <- c("police","helpline","sworker","friend","teacher",
+                   "mother","father","sibling","othera","other")
+
+# survey object
+svy_heatmap <- svydesign(id = ~1, weights = ~wgt_scaled, data = d_victim)
+
+# build exact column list manually - no regex ambiguity
+heatmap_cols <- outer(channel_stems, paste0("_", letters[1:9]), paste0) %>%
+  as.vector() %>%
+  intersect(names(svy_heatmap$variables))
+
+# reshape to long - split from RIGHT to avoid other/othera confusion
+long_disc <- svy_heatmap$variables %>%
+  select(wgt_scaled, all_of(heatmap_cols)) %>%
+  pivot_longer(
+    cols      = all_of(heatmap_cols),
+    names_to  = "varname",
+    values_to = "disclosed"
+  ) %>%
+  mutate(
+    type    = str_extract(varname, "[a-i]$"),
+    channel = str_remove(varname, "_[a-i]$")
+  )
+
+# weighted rates
+svy_long <- svydesign(id = ~1, weights = ~wgt_scaled, data = long_disc)
+rates <- svyby(~disclosed, ~channel + type, svy_long, svymean, na.rm = TRUE)
+
+# apply labels ONCE here
+rates <- rates %>%
+  mutate(
+    type    = label_csea_type(type),
+    channel = label_channel(channel)
+  )
+
+# kable table
+rates_csea <- rates %>%
+  mutate(pct = sprintf("%.1f%%", disclosed * 100)) %>%
+  select(type, channel, pct) %>%
+  pivot_wider(names_from = channel, values_from = pct) %>%
+  rename(`CSEA Type` = type)
+
+rates_csea %>%
+  kable(
+    booktabs = TRUE,
+    caption  = "Survey-weighted percentages of child victims who disclosed 
+                their experience by CSEA type and channel (2020–2021). 
+                Denominator for each cell is children who experienced that 
+                specific CSEA type. Percentages are non-additive as children 
+                could disclose to multiple channels."
+  ) %>%
+  kable_styling(latex_options = c("striped", "scale_down"), font_size = 9)
+```
+We visualise disclosure patterns across all CSEA types and channels in a single comprehensive heatmap.This visual helps us quickly identify which CSEA types have highest/lowest disclosure rates and which channels are most/least used for different abuse types. 
+
+```{r disclosure-heatmap}
+#| fig-cap: "Non-exclusive disclosure rates by CSEA type and channel"
+#| fig-width: 13
+#| fig-height: 8
+
+# order channels lowest to highest (so highest is rightmost on x-axis)
+chan_order <- rates %>%
+  group_by(channel) %>%
+  summarise(avg = mean(disclosed, na.rm = TRUE)) %>%
+  arrange(avg) %>%
+  pull(channel)
+
+# order types highest to lowest
+type_order <- rates %>%
+  group_by(type) %>%
+  summarise(avg = mean(disclosed, na.rm = TRUE)) %>%
+  arrange(desc(avg)) %>%
+  pull(type)
+
+# wrap labels 
+rates_plot <- rates %>%
+  mutate(
+    type    = str_wrap(type, width = 25),
+    type    = factor(type, levels = str_wrap(type_order, width = 25)),
+    channel = factor(channel, levels = chan_order)
+  )
+
+heatmap_disclosure <- ggplot(rates_plot, 
+                             aes(x = channel, y = type, fill = disclosed * 100)) +
+  geom_raster() +
+  geom_text(
+    aes(label = sprintf("%.1f", disclosed * 100)),
+    size = 3, color = "white"
+  ) +
+  scale_y_discrete(position = "right") +
+  colorspace::scale_fill_continuous_sequential(
+    palette = "Inferno",
+    begin   = 0.06,
+    end     = 0.95,
+    name    = "Disclosure\nrate (%)"
+  ) +
+  labs(
+    x       = NULL,
+    y       = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x     = element_text(face = "bold", angle = 45, hjust = 1, size = 10),
+    axis.text.y     = element_text(size = 9, lineheight = 0.85),
+    legend.position = "bottom",
+    panel.grid      = element_blank(),
+    plot.margin     = margin(5, 5, 5, 10),
+    plot.caption    = element_text(size = 7, hjust = 0)
+  )
+
+heatmap_disclosure
+
+ggsave("disclosure_heatmap.pdf",
+       heatmap_disclosure,
+       width  = 13,
+       height = 8,
+       units  = "in",
+       dpi    = 600)
+```
+
+# Barriers to Disclosure Analysis
+
+## 1. Overall barrier prevalence
+We calculated confidence intervals using Wilson score intervals because Wilson intervals perform better when proportions approach 0 or 1 and with small sample sizes, conditions present in our stratified analyses. We choose Wilson CI instead of standard Wald CI because: 1) Better coverage near 0 or 1 (common in our stratified analyses) 2) Never produces CI outside [0,1] bounds 3) Better for small samples (some CSEA types are rare)
+```{r barriers-functions}
+
+# function to reshape barriers 
+long_barriers <- function(data, barrier_list) {
+  prefix_rx <- paste0("^(", paste(barrier_list, collapse = "|"), ")[a-i]$")
+  bar_cols  <- grep(prefix_rx, names(data), value = TRUE)
+  
+  # pull toldnoone columns once for the join 
+  toldnoone_cols <- grep("^toldnoone_[a-i]$", names(data), value = TRUE)
+  
+  toldnoone_long <- data %>%
+    mutate(rid = dplyr::row_number()) %>%
+    select(rid, dplyr::all_of(toldnoone_cols)) %>%
+    pivot_longer(
+      dplyr::all_of(toldnoone_cols),
+      names_to     = "mask_col",
+      values_to    = "mask_val",
+      names_prefix = "toldnoone_"
+    ) %>%
+    rename(type_letter = mask_col)   
+  
+  data %>%
+    mutate(rid = dplyr::row_number()) %>%
+    select(rid, wgt_scaled, dplyr::all_of(bar_cols)) %>%
+    pivot_longer(
+      dplyr::all_of(bar_cols),
+      names_to  = "name",
+      values_to = "value_raw"
+    ) %>%
+    mutate(
+      barrier_key = sub("_[a-i]$", "", name),
+      type_letter = stringr::str_extract(name, "[a-i]$"),
+      value       = as.numeric(value_raw),
+      value       = dplyr::if_else(value > 1, 1, value, missing = value)
+    ) %>%
+    # join mask by rid + type_letter
+    left_join(toldnoone_long, by = c("rid", "type_letter")) %>%
+    filter(mask_val == 1, !is.na(value)) %>%
+    mutate(
+      barrier   = label_barrier(barrier_key),
+      csea_type = label_csea_type(type_letter)
+    ) %>%
+    dplyr::select(rid, wgt_scaled, barrier, csea_type, value)
+}
+
+# calculate Wilson CI and barrier estimates
+estimate_barriers <- function(long_df) {
+  
+  wilson_ci <- function(x, w, conf.level = 0.95) {
+    # missing values
+    ok <- !is.na(x) & !is.na(w)
+    x  <- x[ok]
+    w  <- w[ok]
+    
+    # minimum sample for stability
+    if (length(x) < 5) {
+      return(list(p = NA, ll = NA, ul = NA, n = length(x), n_eff = 0))
+    }
+    
+    # weighted proportion
+    p     <- stats::weighted.mean(x, w)
+    n_eff <- sum(w)^2 / sum(w^2)
+    
+    # wilson score interval 
+    z <- stats::qnorm(1 - (1 - conf.level) / 2)
+    
+    # wilson interval formula 
+    denominator <- 1 + z^2 / n_eff
+    center      <- (p + z^2 / (2 * n_eff)) / denominator
+    margin      <- z * sqrt(p * (1 - p) / n_eff + z^2 / (4 * n_eff^2)) / denominator
+    
+    # gives us bounded estimates
+    list(
+      p    = p,
+      ll   = max(0, center - margin),
+      ul   = min(1, center + margin),
+      n    = length(x),
+      n_eff = round(n_eff, 1)
+    )
+  }
+  
+  # overall estimates
+  overall_df <- long_df %>%
+    group_by(barrier) %>%
+    summarise(
+      ci_result = list(wilson_ci(value, wgt_scaled)),
+      .groups   = "drop"
+    ) %>%
+    unnest_wider(ci_result)
+  
+  # by-type estimates
+  type_df <- long_df %>%
+    group_by(barrier, csea_type) %>%
+    summarise(
+      ci_result  = list(wilson_ci(value, wgt_scaled)),
+      n_positive = sum(value == 1, na.rm = TRUE),
+      .groups    = "drop"
+    ) %>%
+    unnest_wider(ci_result) %>%
+    mutate(
+      
+      # reliability flags
+      reliable  = n >= 10 & n_positive >= 3 & !is.na(ll) & !is.na(ul),
+      precision = ul - ll,
+      wide_ci   = precision > 0.20,
+      ci_status = dplyr::case_when(
+        !reliable ~ "insufficient_n",
+        wide_ci   ~ "imprecise",
+        TRUE      ~ "reliable"
+      ),
+      ci_status = factor(ci_status, levels = c("reliable", "imprecise", "insufficient_n"))
+    )
+  
+  list(overall_df = overall_df, type_df = type_df)
+}
+```
+
+Calculate barrier prevalence with Wilson score CIs
+```{r barriers-data}
+# now we run functions with Wilson
+long_df <- long_barriers(d_victim, barrier_list)
+ests_wilson <- estimate_barriers(long_df)
+
+# plot limits
+max_overall <- max(ests_wilson$overall_df$ul, na.rm = TRUE)
+max_types <- max(ests_wilson$type_df$p, na.rm = TRUE)
+max_val <- max(max_overall, max_types, na.rm = TRUE)
+plot_limit <- max(0.60, ceiling(max_val * 20) / 20)
+```
+
+We create two barriers functions to plot pooled barriers as well as by CSEA subtype
+```{r barriers-plot-functions}
+
+# panel a: overall barriers
+plot_overall <- function(overall_df, lim) {
+  overall_df <- overall_df %>%
+    arrange(p) %>%
+    mutate(barrier = fct_inorder(barrier))
+  
+  ggplot(overall_df, aes(x = p, y = barrier)) +
+    geom_segment(aes(x = ll, xend = ul, yend = barrier),
+                 linewidth = 0.5, color = "grey30") +
+    geom_point(size = 2.5, shape = 18, color = "black") +
+    scale_x_continuous(
+      labels = percent_format(accuracy = 1),
+      limits = c(0, lim),
+      breaks = seq(0, lim, by = 0.10),
+      expand = expansion(mult = c(0.01, 0.04))
+    ) +
+    labs(
+      x = "Weighted proportion (%)",
+      y = NULL,
+      title = "Overall share of non-disclosed instances of each barrier"
+    ) +
+    theme_minimal(base_size = 8, base_family = "sans") +
+  theme(
+    axis.text.y  = element_text(size = 5, family = "sans"),
+    axis.text.x  = element_text(size = 5, family = "sans"),
+    axis.title.x = element_text(size = 7, family = "sans", margin = margin(t = 3)),
+    plot.title   = element_text(size = 8, face = "bold", family = "sans"),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.grid.major.x = element_line(color = "grey85", linewidth = 0.25),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+      plot.margin = margin(3, 3, 3, 3)
+    )
+}
+```
+
+```{r}
+
+# panel b: CSEA type
+plot_by_type <- function(type_df, overall_df, lim) {
+  barrier_order <- overall_df %>% arrange(p) %>% pull(barrier)
+  
+  plot_data <- type_df %>%
+    mutate(
+      barrier = factor(barrier, levels = barrier_order),
+      csea_type = factor(csea_type)
+    ) %>%
+    filter(!is.na(p), !is.na(barrier))
+  
+  n_types <- n_distinct(plot_data$csea_type)
+  colors <- viridis(n_types, option = "inferno", begin = 0.15, end = 0.90)
+  
+  ggplot(plot_data, aes(x = p, y = barrier, color = csea_type)) +
+    geom_segment(aes(xend = 0, yend = barrier), linewidth = 0.5, alpha = 0.7) +
+    geom_point(aes(shape = ci_status, size = ci_status, alpha = ci_status)) +
+    scale_shape_manual(
+      values = c("reliable" = 16, "imprecise" = 16, "insufficient_n" = 1),
+      guide = "none"
+    ) +
+    scale_size_manual(
+      values = c("reliable" = 1.8, "imprecise" = 1.6, "insufficient_n" = 1.4),
+      guide = "none"
+    ) +
+    scale_alpha_manual(
+      values = c("reliable" = 1.0, "imprecise" = 0.7, "insufficient_n" = 0.5),
+      guide = "none"
+    ) +
+    scale_x_continuous(
+      labels = percent_format(accuracy = 1),
+      limits = c(0, lim),
+      breaks = seq(0, lim, by = 0.10),
+      expand = expansion(mult = c(0.01, 0.05))
+    ) +
+    scale_color_manual(values = colors, guide = "none") +
+    facet_wrap(~csea_type, ncol = 3) +
+    labs(
+      x = "Weighted proportion (%)",
+      y = NULL,
+      title = "Barriers by CSEA type (share of non-disclosed instances)"
+    ) +
+    theme_minimal(base_size = 7, base_family = "sans") +
+  theme(
+    strip.text   = element_text(color = "white", face = "bold", 
+                                size = 6.5, family = "sans"),
+    axis.text.y  = element_text(size = 5, family = "sans"),
+    axis.text.x  = element_text(size = 5, family = "sans"),
+    axis.title.x = element_text(size = 6.5, family = "sans", margin = margin(t = 2)),
+    plot.title   = element_text(size = 7, face = "bold", family = "sans"),
+      strip.background = element_rect(fill = "grey20", color = "grey20"),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank(),
+      panel.grid.major.x = element_line(color = "grey85", linewidth = 0.25),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.35),
+      panel.spacing = unit(0.35, "lines"),
+      plot.margin = margin(2, 2, 2, 2)
+    )
+}
+```
+
+## 2. Barriers to Disclosure (Figure 3)
+We analysed barriers among children who did not disclose their technology-facilitated CSEA experiences (instance-level denominator). For each barrier we computed survey-weighted proportions with two-sided 95% Wilson score intervals, using an effective sample size to reflect weighting. Estimates based on <10 observations or <3 positive responses are reported without confidence intervals due to insufficient precision.
+
+Panel (a) shows overall barrier prevalence pooled across CSEA types and ordered from most to least common; Wilson intervals are shown. Panel (b) presents barrier prevalence by CSEA type with Wilson intervals, facilitating comparison while accommodating variable cell sizes and proportions near 0 or 1. Because the barrier item was multi-select, within-type proportions do not sum to 100%.
+```{r barriers-figure}
+#| fig-cap: "Barriers to seeking help after technology-facilitated CSEA"
+#| fig-width: 8
+#| fig-height: 8
+
+# create combined figure
+p_overall <- plot_overall(ests_wilson$overall_df, plot_limit)
+p_types <- plot_by_type(ests_wilson$type_df, ests_wilson$overall_df, plot_limit)
+
+barriers_figure <- p_overall / p_types +
+  plot_layout(heights = c(0.32, 0.68)) +
+  plot_annotation(tag_levels = "a")
+
+barriers_figure
+
+# save as Fig 3
+ggsave("figure_3.pdf", 
+       barriers_figure & 
+         theme(
+          axis.title = element_text(size = 7, family = "sans"),
+         axis.text  = element_text(size = 5, family = "sans"),
+         strip.text = element_text(face = "bold", size = 5, 
+                                   colour = "white", family = "sans"),
+       ),
+       width  = 18,
+       height = 17,
+       units  = "cm",
+       dpi    = 600,
+       bg     = "white")
+
+```
+
+## 3. All Barriers Ranked Table
+```{r all-barriers-ranked}
+#| tbl-cap: "All barriers to disclosure ranked by prevalence"
+
+barriers_ranked <- ests_wilson$overall_df %>%
+  arrange(desc(p)) %>%
+  mutate(
+    Rank = row_number(),
+    Barrier = barrier,
+    `Prevalence (%)` = sprintf("%.1f", p * 100),
+    `95% CI` = sprintf("[%.1f, %.1f]", ll * 100, ul * 100),
+    `Sample Size` = n,
+    `Effective N` = round(n_eff, 0)
+  ) %>%
+  select(Rank, Barrier, `Prevalence (%)`, `95% CI`, `Sample Size`, `Effective N`)
+
+kable(barriers_ranked, align = c("c", "l", "r", "r", "r", "r"))
+```
+
+## 4. Supplementary Table: Barriers by CSEA Type
+```{r barriers-wide-table}
+# function to create barriers table
+barriers_table <- function(overall_df, type_df) {
+  
+  # format estimates
+  format_compact <- function(p, ll, ul, reliable, wide_ci) {
+    est <- sprintf("%.1f", p * 100)
+    
+    if (!reliable) {
+      return(paste0(est, "†"))
+    } else if (wide_ci) {
+      ci <- sprintf("[%.1f,%.1f]‡", ll * 100, ul * 100)
+      return(paste0(est, ci))
+    } else {
+      ci <- sprintf("[%.1f,%.1f]", ll * 100, ul * 100)
+      return(paste0(est, ci))
+    }
+  }
+  
+  # overall
+  overall_formatted <- overall_df %>%
+    mutate(
+      Overall = sprintf("%.1f [%.1f,%.1f]", p * 100, ll * 100, ul * 100)
+    ) %>%
+    select(barrier, Overall)
+  
+  # types 
+  type_formatted <- type_df %>%
+    mutate(
+      formatted = pmap_chr(
+        list(p, ll, ul, reliable, wide_ci),
+        format_compact
+      )
+    ) %>%
+    select(barrier, csea_type, formatted) %>%
+    pivot_wider(
+      names_from = csea_type,
+      values_from = formatted
+    )
+  
+  # combine
+  wide_table <- overall_formatted %>%
+    left_join(type_formatted, by = "barrier") %>%
+    left_join(overall_df %>% select(barrier, p), by = "barrier") %>%
+    arrange(desc(p)) %>%
+    select(-p)
+  
+  return(wide_table)
+}
+
+# create barriers table
+barriers_compact <- barriers_table(
+  ests_wilson$overall_df,
+  ests_wilson$type_df
+)
+
+barriers_disclosure <- barriers_compact %>%
+  flextable() %>%
+  set_header_labels(barrier = "Barrier to Disclosure") %>%
+  bold(part = "header") %>%
+  width(j = 1, width = 2.2) %>%
+  width(j = 2:ncol(barriers_compact), width = 1.1) %>%
+  align(j = 2:ncol(barriers_compact), align = "center", part = "all") %>%
+  align(j = 1, align = "left", part = "all") %>%
+  fontsize(size = 8, part = "all") %>%
+  fontsize(size = 9, part = "header") %>%
+  border_outer(border = fp_border(width = 2)) %>%
+  border_inner_h(border = fp_border(width = 0.5)) %>%
+  border_inner_v(border = fp_border(width = 0.5)) %>%
+  add_header_row(
+    values = c("", "Overall", "CSEA Type"),
+    colwidths = c(1, 1, ncol(barriers_compact) - 2)
+  ) %>%
+  merge_h(part = "header", i = 1) %>%
+  add_footer_lines(
+    values = c(
+      "Estimate [Lower CI, Upper CI]. All values are percentages.",
+      "† Insufficient sample size (n<10 or <3 events); confidence interval not shown.",
+      "‡ Imprecise estimate (confidence interval width >20 percentage points).",
+      "Confidence intervals calculated using Wilson score method, bounded at [0, 100]."
+    )
+  ) %>%
+  fontsize(size = 7, part = "footer") %>%
+  italic(part = "footer") %>%
+  align(align = "left", part = "footer") %>%
+  theme_booktabs() %>%
+  autofit()
+
+barriers_disclosure 
+```
+
+
+# Barrier Co-occurrence Analysis
+
+This section analyses patterns of barrier co-occurrence among children who did not disclose technology-facilitated CSEA. We use survey weights (wgt_scaled) throughout to provide population-representative estimates.
+
+### Data Preparation
+
+We start with data where each child who experienced but did not disclose CSEA answered a multiselect question about barriers. For each barrier type, create a single binary indicator: true if barrier was cited for ANY of the 9 CSEA types. and false otherwise. We reshape this into wide format where each row represents one non-disclosed incident (child × CSEA type combination). This enables us to count how often barriers co-occur within the same non-disclosed incident.
+```{r barrier-data-preparation}
+# A) one row per non-disclosed incident (by CSEA type letter a–i)
+base_nd <- d_victim %>%
+  select(CBU_ID, COUNTRY, wgt_scaled, starts_with("toldnoone_")) %>%
+  pivot_longer(
+    starts_with("toldnoone_"),
+    names_to    = "abuse_type",
+    values_to   = "nondisclosed",
+    names_prefix = "toldnoone_"
+  ) %>%
+  filter(nondisclosed == 1) %>%
+  select(-nondisclosed)
+
+# B) long barriers 
+bar_rx <- paste0("^(", paste(barrier_prefixes, collapse = "|"), ")_[a-i]$")
+bar_long <- d_victim %>%
+  select(CBU_ID, wgt_scaled, matches(bar_rx)) %>%
+  pivot_longer(
+    matches(bar_rx),
+    names_to  = "barrier_var",
+    values_to = "endorsed"
+  ) %>%
+  mutate(
+    barrier_type = sub("_[a-i]$", "", barrier_var),
+    abuse_type   = sub("^.*_([a-i])$", "\\1", barrier_var),
+    endorsed     = as.integer(replace_na(as.numeric(endorsed), 0))
+  ) %>%
+  select(CBU_ID, abuse_type, barrier_type, endorsed)
+
+# C)keep zero-barrier rows 
+barrier_wide_all <- base_nd %>%
+  left_join(bar_long, by = c("CBU_ID", "abuse_type")) %>%
+  mutate(endorsed = replace_na(endorsed, 0)) %>%
+  pivot_wider(
+    id_cols     = c(CBU_ID, abuse_type, COUNTRY, wgt_scaled),
+    names_from  = barrier_type,
+    values_from = endorsed,
+    values_fn   = max,
+    values_fill = 0
+  ) %>%
+  mutate(across(all_of(setdiff(barrier_prefixes,
+                               intersect(barrier_prefixes, names(.)))),
+                ~ 0, .names = "{.col}"))
+
+# Denominators = ALL non-disclosed incidents
+n_total_unweighted <- nrow(barrier_wide_all)
+n_total_weighted   <- sum(barrier_wide_all$wgt_scaled, na.rm = TRUE)
+
+cat("Total non-disclosed incidents (unweighted): ", n_total_unweighted, "\n")
+cat("Total non-disclosed incidents (weighted):   ", round(n_total_weighted, 0), "\n")
+```
+
+### 1. Distribution of Number of Barriers per Incident
+
+For each non-disclosed incident, we count how many barriers were selected. This shows whether children typically cite single barriers or multiple barriers simultaneously. We use both unweighted counts and weighted percentages.
+```{r n-barriers-analysis}
+
+bw_all <- barrier_wide_all %>%
+  mutate(across(all_of(barrier_prefixes), ~ as.integer(. == 1))) %>%
+  mutate(across(all_of(barrier_prefixes), ~ tidyr::replace_na(., 0)))
+
+n_total_weighted <- sum(bw_all$wgt_scaled, na.rm = TRUE)
+
+n_barriers_summary <- bw_all %>%
+  mutate(n_barriers = rowSums(select(., all_of(barrier_prefixes)), na.rm = TRUE)) %>%
+  group_by(n_barriers) %>%
+  summarise(
+    n_incidents_unw = n(),
+    n_incidents_w   = sum(wgt_scaled, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(pct = round(100 * n_incidents_w / n_total_weighted, 1)) %>%
+  arrange(n_barriers)
+
+n_barriers_summary
+```
+
+### 1. Figure: Distribution of Barriers per Incident
+```{r fig-n-barriers, fig.width=7, fig.height=5}
+#| fig-cap: "Distribution of number of barriers cited per non-disclosed incident"
+
+# plot multiciplity 
+ggplot(n_barriers_summary, aes(x = factor(n_barriers), y = pct)) +
+  geom_col(fill = "#FD8D3C", width = 0.7) +
+  geom_text(aes(label = paste0(pct, "%")), vjust = -0.5, size = 3.5) +
+  labs(
+    x = "Number of barriers selected per non-disclosed incident",
+    y = "Percentage of non-disclosed incidents (weighted)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 10)
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, NA))
+
+ggsave("Supp_Fig_barriers_distribution.png", 
+       width = 7, 
+       height = 5, 
+       dpi = 300
+       )
+```
+## 3. Full Co-occurrence Matrix (Weighted)
+
+We calculate pairwise co-occurrence frequencies for all barrier combinations using survey weights. Diagonal cells show individual barrier prevalence; off-diagonal cells show joint occurrence. 
+
+Matrix structure:
+- *Diagonal cells*: Individual barrier prevalence (what % of incidents cite this barrier)
+- *Off-diagonal cells*: Joint prevalence (what % of incidents cite BOTH barriers)
+```{r cooccurrence-matrix-weighted}
+
+# co-occurrence matrix 
+cooccurrence <- function(data, barriers) {
+  
+  # Binarise; catches any values > 1 from pivot_wider max aggregation
+  data <- data %>%
+    mutate(across(all_of(barriers), ~ as.integer(. >= 1)))
+  
+  n_total <- sum(data$wgt_scaled, na.rm = TRUE)
+  
+  M <- matrix(0, length(barriers), length(barriers),
+              dimnames = list(barriers, barriers))
+  for (i in seq_along(barriers)) {
+    for (j in seq_along(barriers)) {
+      b1 <- barriers[i]; b2 <- barriers[j]
+      if (i == j) {
+        M[i, j] <- 100 * sum(data$wgt_scaled[data[[b1]] == 1], na.rm = TRUE) / n_total
+      } else {
+        M[i, j] <- 100 * sum(data$wgt_scaled[data[[b1]] == 1 & data[[b2]] == 1], na.rm = TRUE) / n_total
+      }
+    }
+  }
+  M
+}
+
+cooc_matrix <- cooccurrence(bw_all, barrier_prefixes)
+
+# top 5 pairs 
+upper_tri <- upper.tri(cooc_matrix)
+pairs_df <- data.frame(
+  barrier1 = rownames(cooc_matrix)[row(cooc_matrix)][upper_tri],
+  barrier2 = colnames(cooc_matrix)[col(cooc_matrix)][upper_tri],
+  pct      = cooc_matrix[upper_tri]
+) %>%
+  arrange(desc(pct)) %>%
+  slice(1:5)
+
+# labels
+rownames(cooc_matrix) <- short_labels[rownames(cooc_matrix)]
+colnames(cooc_matrix) <- short_labels[colnames(cooc_matrix)]
+
+# diagonal 
+diagonal_vals <- sort(diag(cooc_matrix), decreasing = TRUE)
+```
+
+### Figure: Co-occurrence Heatmap
+Here we visualize the complete 13×13 co-occurrence matrix showing all barrier relationships.
+```{r}
+#| fig-cap: "Co-occurrence of barriers to disclosure (weighted estimates)"
+
+# building concur
+cooccur_df <- as.data.frame(as.table(cooc_matrix))
+names(cooccur_df) <- c("Barrier1","Barrier2","Percent")
+cooccur_df$Percent <- as.numeric(cooccur_df$Percent)
+
+cooccur_df <- cooccur_df |>
+  dplyr::mutate(
+    is_diag     = Barrier1 == Barrier2,
+    Percent_off = ifelse(is_diag, NA, Percent)  
+  )
+
+max_off <- max(cooccur_df$Percent_off, na.rm = TRUE)
+brks    <- seq(0, ceiling(max_off/10)*10, by = 10)
+```
+
+```{r, fig.width=11, fig.height=10}
+cooccur_heatmap <- ggplot(cooccur_df, aes(x = Barrier2, y = Barrier1)) +
+  geom_tile(aes(fill = Percent_off), color = "white", linewidth = 0.3) +
+  geom_tile(
+    data = subset(cooccur_df, is_diag),
+    aes(x = Barrier2, y = Barrier1),
+    fill = "grey95", color = "white", linewidth = 0.3
+  ) +
+  geom_text(
+    data = subset(cooccur_df, !is_diag),
+    aes(label = sprintf("%.1f", Percent),
+        color = ifelse(Percent > 0.6 * max_off, "white", "black")),
+    size = 2.2, show.legend = FALSE
+  ) +
+  geom_text(
+    data = subset(cooccur_df, is_diag),
+    aes(label = sprintf("%.1f", Percent)),
+    size = 2.2, color = "grey40"
+  ) +
+  scale_color_identity() +
+  scale_fill_viridis_c(
+    option = "inferno",
+    direction = -1,   
+    begin = 0.20,    
+    end   = 0.90,     
+    name = "% of\nincidents",
+    limits = c(0, max_off),
+    breaks = brks,
+    na.value = "white"
+  ) +
+  coord_fixed() +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    axis.title  = element_blank(),
+    legend.position = "right",
+    panel.grid = element_blank()
+  )
+
+cooccur_heatmap
+
+ggsave("Fig_barrier_cooccurrence_weighted.pdf", 
+       plot = cooccur_heatmap, 
+       width = 11, 
+       height = 10, 
+       dpi = 300)
+```
+
+**Figure interpretation:** Co-occurrence of barriers to disclosure among non-disclosed incidents (N=`r format(round(n_total_weighted), big.mark=",")`). Heat map showing the weighted percentage of non-disclosed incidents in which each barrier combination was cited. Diagonal cells show individual barrier prevalence. Off-diagonal cells show joint occurrence. Survey weights applied to provide population-representative estimates. Low off-diagonal values relative to diagonal values indicate that barriers are largely independent, suggesting heterogeneous pathways to non-disclosure.
+
+### Barriers summary tables
+
+```{r}
+# helpers for suppo tables
+full_label <- function(x) {
+  inv <- setNames(barrier_labels[names(short_labels)], unname(short_labels))
+  out <- unname(inv[x])
+  out[is.na(out)] <- x[is.na(out)]
+  out
+}
+
+bcols <- function(df, cols) {
+  miss <- setdiff(cols, names(df))
+  if (length(miss)) df[miss] <- 0L
+  df
+}
+
+```
+### A) Multiplicity table (weighted) 
+Summarize the distribution of barrier counts for supplementary
+```{r, warning = FALSE}
+mult_table <- barrier_wide_all %>%
+  bcols(barrier_prefixes) %>%
+  mutate(
+    across(
+      all_of(barrier_prefixes),
+      ~ as.integer(replace_na(. == 1 | . == "1", FALSE))
+    ),
+    n_barriers = rowSums(across(all_of(barrier_prefixes)), na.rm = TRUE),
+    bin = case_when(
+      .data$n_barriers == 0 ~ "0 (none selected)",
+      .data$n_barriers == 1 ~ "1",
+      .data$n_barriers %in% 2:3 ~ "2–3",
+      .data$n_barriers >= 4 ~ "4+"
+    )
+  ) %>%
+  count(.data$bin, wt = .data$wgt_scaled, name = "w") %>%
+  mutate(`Weighted % of non-disclosed incidents` = round(100 * .data$w / sum(.data$w), 1)) %>%
+  arrange(factor(.data$bin, levels = c("0 (none selected)", "1", "2–3", "4+"))) %>%
+  select(`Number of barriers` = .data$bin, `Weighted % of non-disclosed incidents`)
+
+mult_table %>%
+  flextable() %>%
+  align(align = "center", part = "all") %>%
+  autofit()
+```
+
+### B) Top co-occurring pairs (top 5)
+Here we show the five most common barrier combinations.
+```{r}
+
+pairs_df <- as.data.frame(as.table(cooc_matrix), stringsAsFactors = FALSE)
+names(pairs_df) <- c("b1_raw", "b2_raw", "Percent")
+
+pairs_df <- pairs_df %>%
+  filter(.data$b1_raw != .data$b2_raw) %>%
+  mutate(
+    r = match(.data$b1_raw, rownames(cooc_matrix)),
+    c = match(.data$b2_raw, colnames(cooc_matrix))
+  ) %>%
+  filter(.data$r < .data$c) %>%
+  arrange(desc(.data$Percent)) %>%
+  mutate(
+    `Barrier 1` = full_label(.data$b1_raw),
+    `Barrier 2` = full_label(.data$b2_raw),
+    `Percent`   = sprintf("%.1f", .data$Percent)
+  ) %>%
+  select(`Barrier 1`, `Barrier 2`, `Percent`) %>%
+  slice(1:5)
+
+pairs_df %>%
+  flextable()
+```

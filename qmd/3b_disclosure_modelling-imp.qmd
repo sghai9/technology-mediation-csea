@@ -1,0 +1,2009 @@
+---
+title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
+authors: Ghai et al. 
+subtitle: Modelling script (imputed analysis)
+format: 
+  typst:
+    toc: true
+    toc-depth: 2
+  pdf:
+    toc: true
+    toc-depth: 2
+    echo: false
+    number_sections: true
+    fig_caption: true
+    fig_height: 12
+    fig_width: 8
+    latex_engine: xelatex
+    fontsize: 10pt
+    mainfont: "Times New Roman"
+    header-includes:
+      - \usepackage{pdflscape}   
+      - \usepackage{geometry}     
+      - \geometry{margin=1in}     
+      - \usepackage{longtable} 
+      - \usepackage{adjustbox}  
+  html:
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    number_sections: true
+    fig_caption: true
+    css: "assets/styles.css"
+    highlight: "pygments"
+---
+
+## Analysis Set: Multiple Imputation
+This script implements the full modelling pipeline with imputed data used to analyse predictors of disclosure of technology-facilitated CSEA. It includes all pre-registered confirmatory analyses, pre-registered exploratory models, and additional exploratory extensions, as well as diagnostics, multiple imputation, model comparisons, and figure generation. All models are estimated in a Bayesian framework using brms with survey weights and include all prespecified covariates.
+
+**Model specifications**
+
+(1) **Pre-registered confirmatory analysis**: Logistic regression with all prespecified predictors, survey weights, no random effects (imputed).
+
+(2) **Pre-registered exploratory analysis**: Multilevel models with random intercepts by country (n = 12) for the three main disclosure outcomes (any, formal, informal) (imputed).
+
+(3) **Exploratory (not pre-registered) main model**: Multilevel models with random intercepts and random slopes by country (imputed)
+
+(4) **Pre-registered exploratory extension**: Random-effects models including an age × gender interaction, allowing  these effects to vary across countries (imputed).
+
+(5) **Pre-registered exploratory robustness models**:  Regularised Bayesian logistic regression with horseshoe priors, fitted with random intercepts (and extended with random slopes) as sensitivity analyses (imputed).
+
+```{r}
+#| label: options
+#| message: false
+#| cache: false
+
+# Load packages
+library(gtsummary)
+library(png)
+library(tidyverse)
+library(DataExplorer)
+library(survey)
+library(janitor)
+library(grid)
+library(gridExtra)
+library(gridGraphics)
+library(ggrepel)
+library(mice)
+library(brms)
+library(scales)
+library(dplyr)
+library(purrr)
+library(naniar)
+library(collapse)
+library(ggdist)
+library(knitr)
+library(rlang)
+library(broom.mixed)
+library(sjPlot)
+library(RColorBrewer)
+library(corrplot)
+library(ggh4x)
+library(bayesplot)
+library(bayestestR)
+library(patchwork)
+library(rstan)
+library(viridis)
+library(marginaleffects)
+library(kableExtra)
+library(gt)
+library(posterior)
+library(tibble)
+library(colorspace)
+library(ggnewscale)
+library(car)
+library(performance)
+library(srvyr)
+library(tidybayes)
+
+knitr::opts_chunk$set(dev = "png")
+
+# Modelling: 
+dir.create("models", FALSE)
+options(
+  brms.backend = "cmdstanr",
+  mc.cores = min(parallel::detectCores(), 8),
+  brms.threads = parallel::detectCores() %/% 4
+)
+
+# Make plots pretty 
+theme_set(
+  theme_linedraw() +
+    theme(panel.grid = element_blank())
+)
+
+# Output options
+opts_chunk$set(
+  eval = TRUE,
+  cache = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  echo = knitr::is_html_output()
+)
+options(digits = 2)
+
+# Imputation and HMC iterations
+# HMC iterations
+ITER <- 2000
+# Number of datasets to impute
+M <- 30
+```
+
+```{r, echo=FALSE}
+#| label: load-data-victim
+d_victim <- readRDS("/data-raw/victim_dh.rds")
+```
+
+```{r, echo=FALSE}
+#| label: mutate-data-victim
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+d_victim <- d_victim %>%
+  select(
+    pid = CBU_ID,
+    sex,
+    age,
+    presex,
+    nindex,
+    parentmediate,
+    sexed,
+    urbanrural,
+    helpseeking,
+    digitalskills,
+    COUNTRY,
+    wgt_scaled,
+    victim,
+    starts_with("toldnoone_"),
+    starts_with("abuse_"),
+    starts_with("police_"),
+    starts_with("helpline_"),
+    starts_with("teacher_"),
+    starts_with("sworker_"),
+    starts_with("friend_"),
+    starts_with("sibling_"),
+    starts_with("father_"),
+    starts_with("mother_"),
+    starts_with("other_"),
+    starts_with("othera_"),
+     starts_with("otheropen_"),
+     starts_with("rdontknow_"),
+     starts_with("rprefer_")
+  )
+```
+
+```{r disclosure-wrangling}
+#| include: false 
+#| message: false
+# Identical to function in 2a_disclosure.qmd
+# Duplicated here so this script runs independently
+disclosure_data <- function(data) {
+  
+  # filter victims only
+  victims <- data %>% filter(victim == 1)
+  
+  # disclosure channel names
+  channels <- c("toldnoone", "police", "helpline", "teacher", "sworker", 
+                "friend", "sibling", "father", "mother", "other", "othera")
+  
+  # function to check if disclosed any abuse type to this channel
+  check_channel <- function(prefix, data) {
+    # abuse types are a-i
+    cols <- paste0(prefix, "_", letters[1:9])
+    rowSums(data[cols], na.rm = TRUE) > 0
+  }
+  
+  # apply to each channel
+  for (ch in channels) {
+    victims[[ch]] <- check_channel(ch, victims)
+  }
+  
+  ## create disclosure categories
+  victims %>%
+    mutate(
+      # any disclosure?
+      toldall = police | helpline | teacher | sworker | friend | 
+                 sibling | father | mother | other | othera,
+      # formal vs informal
+      toldformal = police | helpline | teacher | sworker,
+      toldinformal = friend | sibling | father | mother | other | othera,
+      
+      # make mutually exclusive 
+      no_disclosure = !toldall,
+      informal_only = toldinformal & !toldformal,
+      formal_only = toldformal & !toldinformal,
+      both_channels = toldinformal & toldformal,
+      
+      # now factor
+      disclosure_type = case_when(
+        both_channels ~ "Both",
+        informal_only ~ "Informal only",
+        formal_only ~ "Formal only",
+        no_disclosure ~ "None"
+      ),
+      disclosure_type = factor(disclosure_type, 
+                              levels = c("None", "Informal only", "Formal only", "Both"))
+    )
+}
+
+d_report <- disclosure_data(d_victim)
+```
+
+Load victim data and define labels including variations (to be used throughout)
+```{r define-labels}
+#| label: define-labels
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+# Facet labels for predictors 
+facet_labels <- c(
+  "b_Intercept" = "Intercept",
+  "b_sex1" = "Girl (vs Boy)",
+  "b_sexGirl" = "Girl (vs Boy)",
+  "sex1" = "Girl (vs Boy)",
+  "sexGirl" = "Girl (vs Boy)",
+  "b_age" = "Age (per year)",
+  "b_sex1:age" = "Age:Gender interaction",  
+  "age" = "Age (per year)",
+  "b_presex1" = "Premarital sex",
+  "presex1" = "Premarital sex",
+  "b_nindex" = "Inequitable gender attitudes",
+  "nindex" = "Inequitable gender attitudes",
+  "b_parentmediate" = "Enabling parental mediation",
+  "parentmediate" = "Enabling parental mediation",
+  "b_sexed1" = "Sex education",
+  "sexed1" = "Sex education",
+  "b_helpseeking1" = "Help-seeking",
+  "helpseeking1" = "Help-seeking",
+  "b_digitalskills" = "Digital skills",
+  "digitalskills" = "Digital skills"
+)
+
+ 
+# Report names for disclosure outcomes
+report_names <- c(
+  "toldall" = "Any Disclosure",
+  "toldformal" = "Formal Disclosure",
+  "toldinformal" = "Informal Disclosure"
+)
+
+# Clean labels for correlation plots
+clean_labels <- c(
+  "sex1" = "Girl (vs Boy)",
+  "sexGirl" = "Girl (vs Boy)",
+  "age" = "Age (per year)",
+  "presex1" = "Premarital sex",
+  "nindex" = "Inequitable gender attitudes",
+  "parentmediate" = "Enabling parental mediation",
+  "sexed1" = "Sex education",
+  "helpseeking1" = "Help-seeking",
+  "digitalskills" = "Digital skills"
+)
+
+# Define all channels
+channels <- c(
+  "police", 
+  "helpline", 
+  "sworker", 
+  "teacher",
+  "mother", 
+  "father", 
+  "sibling", 
+  "friend",
+  "other", 
+  "othera"
+  )
+
+# labels
+channel_labels <- c(
+  police   = "Police",
+  helpline = "Helpline",
+  sworker  = "Social Worker",
+  teacher  = "Teacher",
+  mother   = "Mother",
+  father   = "Father",
+  sibling  = "Sibling",
+  friend   = "Friend",
+  other    = "Other",
+  othera   = "Other Adult"
+)
+
+# Predictor term names
+predictor_map <- c(
+  b_Intercept     = "Intercept",
+  b_sex1          = "Girls (vs Boys)",
+  b_age           = "Age (per year)",
+  b_presex1       = "Premarital sex",
+  b_nindex        = "Inequitable attitudes towards sex",
+  b_parentmediate = "Enabling parental mediation",
+  b_sexed1        = "Sex education",
+  b_helpseeking1  = "Help-seeking",
+  b_digitalskills = "Digital skills to report"
+)
+predictors_to_keep <- names(predictor_map)
+```
+
+```{r}
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+# Note: this version of summarise_draws_pop takes a named list of models
+# and is specific to this script. The complete case script (3a) uses a 
+# different single-model version of the same function.
+summarise_draws_pop <- function(model_list, facet_labels, report_names) {
+  names_list <- names(model_list)
+  
+  model_list %>%
+    purrr::map(~ brms::posterior_summary(.x, variable = "^b_", regex = TRUE)) %>%
+     purrr::map(as.data.frame) %>%
+     purrr::map(~ tibble::rownames_to_column(.x, var = "term")) %>%
+    bind_rows(.id = "report") %>%
+    mutate(
+      report = factor(report, levels = names_list, labels = report_names[names_list]),
+      term = as.character(term)
+    ) %>%
+    filter(term != "b_Intercept") %>%
+    mutate(
+      predictor = case_when(
+        term %in% names(facet_labels) ~ facet_labels[term],
+        sub("^b_", "", term) %in% names(facet_labels) ~ facet_labels[sub("^b_", "", term)],
+        TRUE ~ term
+      ),
+      Estimate = glue::glue(
+        "{scales::number(Estimate, accuracy = 0.01)} ",
+        "[{scales::number(Q2.5, accuracy = 0.01)}, ",
+        "{scales::number(Q97.5, accuracy = 0.01)}]"
+      )
+    ) %>%
+    select(predictor, report, Estimate) %>%
+    pivot_wider(names_from = report, values_from = Estimate)
+}
+
+fmt_pct <- function(x, d=1) round(100*x, d)
+safe_logical_counts <- function(x) {
+  x <- as.logical(x)
+  tab <- table(x, useNA="no")
+  c(
+    yes = if ("TRUE"  %in% names(tab)) as.integer(tab[["TRUE"]])  else 0L,
+    no  = if ("FALSE" %in% names(tab)) as.integer(tab[["FALSE"]]) else 0L
+  )
+}
+```
+
+```{r, echo = FALSE}
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+
+d_report <- disclosure_data(d_victim)
+
+d_report <- d_report %>%
+       select(
+      c(
+    -ends_with(c(
+      "_a", 
+      "_b", 
+      "_c", 
+      "_d", 
+      "_e", 
+      "_f", 
+      "_g", 
+      "_h", 
+      "_i")),
+      victim
+    )
+  )
+```
+
+# Missingness summary 
+This section first produces a tidy missingness summary for key predictors, presenting counts and percentages. It then visualizes missing data across these variables with a vis_miss plot.
+```{r}
+#| label: tbl-missing
+#| tbl-cap: Summary of missingness (only variables with missingness shown)
+miss_summary <- miss_var_summary(d_report) %>% 
+  filter(variable %in% c("sex", "age", "presex", "nindex", 
+                         "parentmediate", "sexed", "helpseeking", 
+                         "digitalskills")) %>%
+  arrange(desc(pct_miss)) %>%
+  mutate(
+    n_miss = scales::comma(n_miss),
+    pct_miss = sprintf("%.1f%%", pct_miss)
+  ) %>%
+  select(variable, n_miss, pct_miss)
+
+
+miss_summary %>%
+  kable(
+    col.names = c("Variable", "N Missing", "% Missing"),
+    align = c("l", "r", "r")
+  ) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+```{r}
+#| label: fig-missing
+#| fig-cap: Summary of missingness
+#| fig-height: 4.4
+miss_plot <- d_report %>% 
+  select(presex, nindex, parentmediate, sexed, helpseeking, digitalskills) %>% 
+  rename(
+    "Premarital sex" = presex,
+    "Inequitable gender attitudes" = nindex,  
+    "Enabling parental mediation" = parentmediate,
+    "Sex education" = sexed,
+    "Help-seeking" = helpseeking,
+    "Digital skills to report" = digitalskills
+  ) %>%
+  naniar::vis_miss(sort_miss = TRUE) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 16)) +
+  coord_cartesian(clip = "off") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = margin(t = 5, r = 30, b = 10, l = 10)
+  ) +
+  labs(x = NULL, y = "Observations")
+
+miss_plot
+ggsave(
+  "supplement_missingness.pdf",
+  miss_plot,
+  width = 6,
+  height = 4,
+  dpi = 300
+)
+```
+## Impact of listwise deletion
+Next, the code quantifies the impact of listwise deletion by defining a helper that flags complete cases for each outcome and calculates both raw and weighted losses using wgt_scaled. It applies this to the three outcomes (toldall, toldformal, toldinformal), then aggregates the results to report the minimum and maximum retained N and percentage loss. 
+```{r}
+predictor_vars <- c("sex", "age", "presex", "nindex", "parentmediate", 
+                    "sexed", "helpseeking", "digitalskills")
+
+# function to calculate complete cases (raw and weighted)
+calc_complete <- function(data, outcome_var) {
+  model_vars <- c(predictor_vars, outcome_var)
+  
+  data_complete <- data %>%
+    mutate(complete = complete.cases(select(., all_of(model_vars))))
+  
+  # raw
+  n_original <- nrow(data)
+  n_complete <- sum(data_complete$complete)
+  pct_lost <- (n_original - n_complete) / n_original * 100
+  
+  # weighted
+  weighted_n_original <- sum(data$wgt_scaled, na.rm = TRUE)
+  weighted_n_complete <- sum(data_complete$wgt_scaled[data_complete$complete], na.rm = TRUE)
+  weighted_pct_lost <- (weighted_n_original - weighted_n_complete) / weighted_n_original * 100
+  
+  data.frame(
+    outcome = outcome_var,
+    n_original = n_original,
+    n_complete = n_complete,
+    n_lost = n_original - n_complete,
+    pct_lost = pct_lost,
+    weighted_n_original = round(weighted_n_original),
+    weighted_n_complete = round(weighted_n_complete),
+    weighted_n_lost = round(weighted_n_original - weighted_n_complete),
+    weighted_pct_lost = weighted_pct_lost
+  )
+}
+
+# calculate for all our outcomes
+outcomes <- c("toldall", "toldformal", "toldinformal")
+missing_df <- bind_rows(lapply(outcomes, function(x) calc_complete(d_report, x)))
+
+# summary ranges
+missing <- list(
+  n_original = unique(missing_df$n_original),
+  n_complete_min = min(missing_df$n_complete),
+  n_complete_max = max(missing_df$n_complete),
+  pct_lost_min = min(missing_df$pct_lost),
+  pct_lost_max = max(missing_df$pct_lost),
+  weighted_n_original = unique(missing_df$weighted_n_original),
+  weighted_n_complete_min = min(missing_df$weighted_n_complete),
+  weighted_n_complete_max = max(missing_df$weighted_n_complete),
+  weighted_pct_lost_min = min(missing_df$weighted_pct_lost),
+  weighted_pct_lost_max = max(missing_df$weighted_pct_lost)
+)
+```
+Listwise deletion would have substantially reduced sample sizes across our analyses. For example, in the victim subset analysis examining age-sex interactions, listwise deletion would have reduced the sample from N=2,067 to N=1,149, 44% loss, or N = 2025 to 1105; 45% in weighted terms, substantially reducing statistical power.
+```{r}
+missing  <- tibble::tibble(
+  Metric = c(
+    "Original N",
+    "Complete N (min–max)",
+    "% lost (min–max)",
+    "Weighted N (original)",
+    "Weighted complete N (min–max)",
+    "Weighted % lost (min–max)"
+  ),
+  Value = c(
+    comma(missing$n_original),
+    paste0(comma(missing$n_complete_min), "–", comma(missing$n_complete_max)),
+    sprintf("%.1f–%.1f%%", missing$pct_lost_min, missing$pct_lost_max),
+    comma(missing$weighted_n_original),
+    paste0(comma(missing$weighted_n_complete_min), "–", comma(missing$weighted_n_complete_max)),
+    sprintf("%.1f–%.1f%%", missing$weighted_pct_lost_min, missing$weighted_pct_lost_max)
+  )
+)
+
+missing  %>%
+  kable(align = c("l","r"), caption = "Sample loss under listwise deletion (raw and weighted).") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+# Multiple Imputation
+
+We used multiple imputation (M=30 datasets) by chained equations (MICE) with imputed datasets to address missingness under a Missing At Random (MAR) assumption. We fit all models with brm_multiple() so that each imputed dataset was analyzed separately and estimates were pooled across imputations using Rubin’s rules, thus propagating imputation uncertainty. Models included multilevel structure across 12 countries with different specifications (including random intercepts, slopes, interaction and penalised regressions). We use the mice package to generate M multiply imputed datasets. We exclude identifiers, weights, and outcome variables (toldall, toldformal, toldinformal) from being imputed.
+```{r}
+# exclude some variables from imputation
+predictorMatrix <- make.predictorMatrix(d_report)
+predictorMatrix[
+  , 
+  c("pid", "wgt_scaled", "toldall", "toldformal", "toldinformal")
+] <- 0
+
+path <- normalizePath("models/mice-report-intdata.rds", mustWork = FALSE)
+if (!file.exists(path)) {
+  d_report_mice <- mice(
+    d_report, 
+    m = M, 
+    predictorMatrix = predictorMatrix, 
+    print = FALSE
+  )
+  saveRDS(d_report_mice, path)
+}
+d_report_mice <- readRDS(path)
+```
+
+
+# Disclosure Analysis: Multiple imputations
+
+## (1) Pre-Registered Confirmatory Analysis: Logistic Regression Model
+First, we fit the confirmatory logistic regression which now incorporates multiple imputation. 
+```{r}
+#| output: false
+fit_report_all_mice_glm <- brm_multiple(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + 
+    digitalskills,
+  data = d_report_mice,
+  family = bernoulli(),
+  iter = ITER,
+  control = list(adapt_delta = 0.99),
+  file = "models/brm-report-all-mice-glm"
+)
+```
+We then summarise the posterior draws and present credible intervals
+```{r, echo =FALSE}
+#| label: tbl-report-mice-glm
+#| tbl-cap: Results of GLM disclosure model (MI)
+
+posterior_glm <- posterior_summary(fit_report_all_mice_glm)
+posterior_df_mice <- as.data.frame(posterior_glm)
+
+posterior_df_mice <- posterior_df_mice %>%
+  tibble::rownames_to_column(var = "Parameter") %>%
+  mutate(
+    predictor = dplyr::recode(Parameter, !!!facet_labels, .default = Parameter),  # map labels
+    `Odds Ratio` = exp(Estimate),
+    `Lower OR CI` = exp(`Q2.5`),
+    `Upper OR CI` = exp(`Q97.5`)
+  ) %>%
+  select(predictor, Estimate, `Q2.5`, `Q97.5`, `Odds Ratio`, `Lower OR CI`, `Upper OR CI`) %>%
+  dplyr::rename(
+    `Parameter` = predictor,
+    `Lower CI` = `Q2.5`,
+    `Upper CI` = `Q97.5`
+  ) %>%
+  knitr::kable(
+    digits = 3,
+     format.args = list(scientific = FALSE),
+    col.names = c("Parameter", "Estimate", "Lower CI", "Upper CI", "Odds Ratio", "Lower OR CI", "Upper OR CI")
+  )
+posterior_df_mice 
+```
+## (2) Pre-registered Exploratory Analysis: Random Intercepts Model 
+
+Second, we fit a multilevel logistic regression model that accounts for the hierarchical structure of the data, where children are nested within countries. By including random intercepts for country, the model adjusts for baseline differences in disclosure rates across the 12 countries. This analysis examines whether the relationship between key independent variables and disclosure varies according to the type of disclosure channel specifically, formal sources versus informal sources. This set of models was pre-registered as exploratory, allowing us to examine country level variation in predictors of disclosure.
+```{r}
+#| output: false
+# all disclosure
+fit_report_all_mice <- brm_multiple(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  iter = ITER,
+  control = list(adapt_delta = 0.99),
+  file = "models/brm-disclosure-all-mice"
+)
+
+# formal disclosure
+fit_report_formal_mice <- brm_multiple(
+  toldformal | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  iter = ITER,
+  control = list(adapt_delta = 0.99),
+  file = "models/brm-disclosure-formal-mice"
+)
+
+# informal disclosure
+fit_report_informal_mice <- brm_multiple(
+  toldinformal | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  iter = ITER,
+  control = list(adapt_delta = 0.99),
+  file = "models/brm-disclosure-informal-mice"
+)
+```
+This summary provides a side-by-side comparison of how each predictor varies across different disclosure contexts
+```{r}
+#| tbl-cap: Results of disclosure model with country as random effects (imputed models)
+
+mice_models <- list(
+  toldall =   fit_report_all_mice,
+  toldformal = fit_report_formal_mice,
+  toldinformal = fit_report_informal_mice
+) 
+
+summarise_draws_pop(mice_models, facet_labels, report_names) %>%
+  kable(booktabs = TRUE, align = c("l", rep("r", 3))) %>%
+  kable_styling(latex_options = c("striped", "hold_position"), font_size = 9)
+```
+
+\newpage
+
+## (3) Exploratory Analysis (Not Pre-Registered): Random Intercepts and Slopes Model (Main Reported Analysis)
+
+Third, we fit the primary model reported in the manuscript section Demographic and Socio-Cultural Factors Associated with Disclosure. This model extends the previous random intercepts model by including both random intercepts and random slopes for all predictors, allowing their effects to vary across countries. This more flexible specification captures cross-country differences not only in baseline disclosure rates but also in how demographic and sociocultural factors relate to disclosure. Although this was not pre-registered, the model builds directly on the previous model structure to provide a more context-sensitive interpretation of disclosure.
+```{r}
+#| output: false
+# all disclosure
+fit_report_all_mice_random <- brm_multiple(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 + sex + age + presex + nindex + 
+       parentmediate + sexed + helpseeking + digitalskills | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  iter = ITER,
+  file = "models/brm-disclosure-all-mice-random"
+)
+
+# formal disclosure
+fit_report_formal_mice_random <- brm_multiple(
+  toldformal | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 + sex + age + presex + nindex + 
+       parentmediate + sexed + helpseeking + digitalskills | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  iter = ITER,
+  file = "models/brm-disclosure-formal-mice-random"
+)
+# informal disclosure
+fit_report_informal_mice_random <- brm_multiple(
+  toldinformal | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 + sex + age + presex + nindex + 
+       parentmediate + sexed + helpseeking + digitalskills | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  iter = ITER,
+  file = "models/brm-disclosure-informal-mice-random"
+)
+```
+
+We present summary of the Random Intercepts and Slopes Model below
+```{r}
+#| label: tbl-report-randomeffects
+#| tbl-cap: Results of disclosure model with country as random effects and slopes (reported in manuscript)
+
+miceslopes_models <- list(
+  toldall =     fit_report_all_mice_random,
+  toldformal =  fit_report_formal_mice_random,
+  toldinformal =   fit_report_informal_mice_random
+) 
+
+summarise_draws_pop(miceslopes_models, facet_labels, report_names) %>%
+  kable(booktabs = TRUE, align = c("l", rep("r", 3))) %>%
+  kable_styling(latex_options = c("striped", "hold_position"), font_size = 9)
+```
+
+## Correlations Among Predictors in the Exploratory Model
+Next we plot the posterior correlations among fixed-effect parameters in the random intercepts and slopes models. This plots correlations separately for all disclosures, formal disclosures, and informal disclosures. Correlations are derived from the posterior variance-covariance matrix of the fitted model.
+
+```{r}
+#| label: correlationsmatrix
+#| fig-width: 11
+#| fig-height: 8
+#| fig-cap: "Correlation matrices of fixed-effect parameters from Bayesian logistic regression models with random intercepts and random slopes by country."
+
+# parameter correlation matrix from model
+plot_corrmatrix <- function(model, title, clean_labels = NULL,
+                            show_intercept = FALSE,
+                            number.digits = 2,
+                            number.cex = 1.05,
+                            tl.cex = 0.95) {
+  # variance-covariance for fixed effects
+  V <- vcov(model)
+  M <- cov2cor(V)
+  if (!show_intercept) {
+    keep <- setdiff(colnames(M), "(Intercept)")
+    M <- M[keep, keep, drop = FALSE]
+  }
+  if (!is.null(clean_labels)) {
+    lbl <- colnames(M)
+    pretty <- ifelse(lbl %in% names(clean_labels),
+                     unname(clean_labels[lbl]),
+                     lbl)
+    colnames(M) <- rownames(M) <- pretty
+  }
+
+  # plot
+  op <- par(oma = c(0, 0, 2.2, 0), mar = c(1.2, 1.2, 1.2, 1.2))
+  on.exit(par(op), add = TRUE)
+
+  corrplot::corrplot(
+    M,
+    method        = "number",
+    type          = "upper",
+    number.cex    = number.cex,
+    number.digits = number.digits,
+    tl.cex        = tl.cex,
+    tl.srt        = 45,
+    col           = colorRampPalette(c("darkblue", "white", "darkred"))(200),
+    cl.cex        = 0.85,
+    addgrid.col   = "gray85",
+    diag          = FALSE,
+    outline       = TRUE
+  )
+  mtext(title, outer = TRUE, cex = 1.15, line = 0.8)
+  invisible(M)
+}
+
+
+
+# plot the correlation matrices 
+plot_corrmatrix(fit_report_all_mice_random, "All", clean_labels = clean_labels)
+plot_corrmatrix(fit_report_formal_mice_random, "Formal", clean_labels = clean_labels)
+plot_corrmatrix(fit_report_informal_mice_random, "InFormal", clean_labels = clean_labels)
+```
+
+
+\newpage
+
+## Leave-One-Out Cross-Validation
+Next we evaluate LOO cross-validation: the model with random intercepts alone shows slightly better out-of-sample predictive performance than the model with random slopes. However, we note the difference is small.
+```{r}
+#| label: tbl-report-loo
+#| tbl-cap: Model comparison 
+path <- "models/loos.rds"
+if (!file.exists(path)) {
+  loos <- loo(
+    fit_report_all_mice,
+    fit_report_all_mice_random,
+    compare = TRUE,
+    model_names = c("Intercepts", "Intercepts & Slopes")
+  )
+  saveRDS(loos, path)
+}
+loos <- readRDS(path)
+loos
+```
+
+\newpage
+## (4) Pre-registered Exploratory Analysis: Random Intercepts, Slopes and Age-Gender Interactions
+
+Fourth, we further extend the model by introducing random intercepts and random slopes for the country variable, while also including the interaction between age and gender. The addition of random slopes in this analysis goes beyond our exploratory pre-registered model, which only specified random effects and interactions. 
+
+```{r}
+#| output: true
+fit_report_all_mice_random_interaction <- brm_multiple(
+  toldall | weights(wgt_scaled) ~ 
+    sex * age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills + 
+    (1 + sex * age + presex + nindex + 
+       parentmediate + sexed + helpseeking + digitalskills | COUNTRY),
+  data = d_report_mice,  
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  iter = ITER,
+  file = "models/brm-disclosure-all-mice-random-interaction"
+)
+```
+
+```{r}
+#| label: summary-function2
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+summarise_draws_model <- function(model_list,
+                                  label_map,
+                                  show_or    = FALSE,
+                                  term_regex = "^b_",
+                                  col_labels = NULL) {
+  if (is.null(names(model_list)) || any(names(model_list) == "")) {
+    names(model_list) <- paste0("Model ", seq_along(model_list))
+  }
+  if (is.null(col_labels)) col_labels <- names(model_list)
+  stopifnot(length(col_labels) == length(model_list))
+  df <- model_list %>%
+    map(~ brms::posterior_summary(.x, variable = term_regex, regex = TRUE) |> as.data.frame()) %>%
+    map(tibble::rownames_to_column, var = "term") %>%
+    bind_rows(.id = "model")
+  current_ids <- unique(df$model)
+  id_to_label <- stats::setNames(col_labels, current_ids)  
+
+  df %>%
+    mutate(
+      model = dplyr::recode(model, !!!id_to_label),
+      term2 = sub("^b_", "", .data[["term"]])
+    ) %>%
+    filter(.data[["term"]] != "b_Intercept") %>%
+    dplyr::mutate(
+      pred = dplyr::coalesce(unname(label_map[.data[["term"]]]),
+                             unname(label_map[.data[["term2"]]]),
+                             .data[["term2"]]),
+      val = if (show_or) {
+        glue::glue(
+          "{scales::number(exp(.data[['Estimate']]), 0.01)} ",
+          "[{scales::number(exp(.data[['Q2.5']]), 0.01)}, ",
+          "{scales::number(exp(.data[['Q97.5']]), 0.01)}]"
+        )
+      } else {
+        glue::glue(
+          "{scales::number(.data[['Estimate']], 0.01)} ",
+          "[{scales::number(.data[['Q2.5']], 0.01)}, ",
+          "{scales::number(.data[['Q97.5']], 0.01)}]"
+        )
+      }
+    ) %>%
+    dplyr::select(predictor = pred, model, val) %>%
+    tidyr::pivot_wider(names_from = model, values_from = val)
+}
+```
+We show summaries below and also plot the associations 
+```{r}
+#| label: tbl-report-int
+#| tbl-cap: Results of Interaction model
+
+summarise_draws_model(
+  list("Random slopes + interaction" = fit_report_all_mice_random_interaction),
+  facet_labels
+) %>% knitr::kable()
+```
+
+```{r}
+#| label: fig-reportcountry
+#| fig-cap: Association between age and probablity of technology-facilitated CSEA reporting/disclosing for boys and girls and each country.
+# function to extract brms_conditional_effects
+ce_ggplot <- function(brms_conditional_effects) {
+  brms_conditional_effects %>%
+    plot(plot = FALSE) %>%
+    .[[1]]
+}
+
+# extract conditional effects
+p_report_pop <- conditional_effects(
+  fit_report_all_mice_random_interaction,
+  effects = "age:sex",
+  conditions = distinct(d_report, COUNTRY),
+  re_formula = NULL,
+  resolution = 9,
+) %>% ce_ggplot()
+
+p_report_pop <- p_report_pop +
+  scale_color_brewer(
+    palette = "Set1",
+    aesthetics = c("color", "fill")
+  ) +
+   facet_wrap(~COUNTRY) +
+  scale_y_continuous(
+    "Probability of Disclosure"
+  ) +
+  scale_x_continuous(
+    "Age (years)",
+    labels = ~ . + 15
+  ) +
+  theme(
+    legend.title = element_blank()
+  )
+
+# hack to order panels by average level of reporting
+p_report_pop$data <- p_report_pop$data %>%
+  mutate(COUNTRY = fct_reorder(COUNTRY, estimate__))
+
+# plot with updated data
+p_report_pop
+```
+We extract predicted probabilities of disclosure of technology-facilitated CSEA and how it varies by girls and boys
+```{r}
+#| label: extracted-probabilitiesdisclosure
+#| tbl-cap: Predicted probabilities of disclosure of technology-facilitated CSEA
+
+# First we extract the datalayer
+report_prob <- ggplot_build(p_report_pop)$plot$data
+
+# Adjust for age
+report_prob$adjusted_age <- report_prob$effect1__ + 15
+
+report_prob <- report_prob %>%
+  mutate(
+    adjusted_age = round(adjusted_age),
+    sex = factor(sex, labels = c("Boy", "Girl"))
+  )
+# Filter and select adjusted values
+extracted_prob_r <- report_prob %>%
+  filter(
+    adjusted_age %in% c(12, 17), sex %in% c("Boy", "Girl")
+  ) %>%
+  select(
+    COUNTRY, adjusted_age, sex, estimate__, lower__, upper__
+  )
+# Predicted probabilities table
+extracted_prob_r  %>%
+  kable(col.names = c("Country", "Age", "Sex", "Estimate", "Lower Bound", "Upper Bound")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F)
+```
+
+## (5) Pre-registered Exploratory Analysis: Regularised Horseshoe Regression 
+
+Finally, we run two regularised horseshoe regressions models. In the original pre-registration, we planned to regularize the model to prevent overfitting and ensure stability, as suggested by Gelman et al. (2020). Specifically, we intended to use LASSO regression, which introduces a penalty term to shrink coefficients toward zero. The penalty term's strength (lambda value) was to be determined using Bayesian methods, controlling the weighting of the penalty. Due to limitations with the software package brms, which made LASSO defunct, we opted for an alternative approach. Instead of LASSO, we applied the horseshoe prior as a conservative check. 
+```{r}
+#| label: fit-horseshoe-randomeffects
+#| output: false
+# set a horseshoe prior on the regression coefficients 
+# scale_global = 0.5 sets the global shrinkage scale (controls overall regularisation)
+prior <- prior(horseshoe(3, scale_global = 0.5), class = "b")
+
+fit_report_mice_horseshoe <- brm_multiple(
+  formula = toldall | weights(wgt_scaled) ~
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 | COUNTRY),
+  data = d_report_mice,
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  iter = ITER,
+  prior = prior,
+  file = "models/brm-report-horseshoe-random"
+)
+```
+
+```{r}
+#| label:  fit-horseshoe-randomeslopes
+#| output: false
+fit_report_mice_horseshoe_slope <- brm_multiple(
+  formula = toldall | weights(wgt_scaled) ~
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills +
+    (1 + sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + digitalskills | COUNTRY),
+  data = d_report_mice,
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  iter = ITER,
+  prior = prior,
+  file = "models/brm-report-horseshoe-random-slope"
+)
+```
+
+```{r}
+#| label: tbl-report-pen
+#| tbl-cap: Results of penalised models
+
+summarise_draws_model(
+  list(
+    fit_report_mice_horseshoe,
+    fit_report_mice_horseshoe_slope
+  ),
+  facet_labels,
+  col_labels = c("Random Intercepts + Regularised",
+                 "Random Slopes + Regularised")
+) %>% knitr::kable()
+
+```
+
+## Posterior Probability of Direction 
+We further compute the posterior probability of direction (PD) and posterior means for each predictor across two sets of models examining disclosure of technology-facilitated child sexual exploitation and abuse (CSEA). A) Random Intercepts and Slopes Model (Main Reported Analysis) B) Regularlised regression models. PD values represent the degree of certainty in the direction of each estimated effect indicating the proportion of the posterior distribution that lies on the same side of zero (expressed as percentages)
+```{r}
+#| label: tbl-report-prb0
+#| tbl-cap: Posterior probabilities of direction for each predictor across the All, Formal, and Informal disclosure models (Random intercepts and slopes).
+
+pd <- function(model_list, predictors, labels) {
+  model_list %>%
+    purrr::map(~ as_draws_df(.x)) %>%
+    purrr::map(~ {
+      draws <- .x[, predictors, drop = FALSE]
+      means <- colMeans(draws)
+      pd <- sapply(draws, function(x) max(mean(x > 0), mean(x < 0)))
+      direction <- ifelse(colMeans(draws) > 0, "positive", "negative")
+      tibble::tibble(
+        Predictor = predictors,
+        Mean = round(means, 3),
+        PD = scales::percent(pd, accuracy = 0.01, scale = 100),
+        Direction = direction
+      )
+    }) %>%
+    purrr::imap_dfr(~ dplyr::mutate(.x, Model = .y), .id = NULL) %>%
+    dplyr::mutate(Predictor = labels[Predictor]) %>%
+    dplyr::select(Model, Predictor, Mean, PD, Direction)
+}
+
+
+models1 <- list(
+  All = fit_report_all_mice_random,
+  Formal =  fit_report_formal_mice_random,
+  Informal =  fit_report_informal_mice_random
+)
+
+predictors <- c(
+  "b_sex1",
+  "b_age",
+  "b_presex1",
+  "b_nindex",
+  "b_parentmediate",
+  "b_sexed1",
+  "b_helpseeking1",
+  "b_digitalskills"
+)
+
+pd(models1, predictors, facet_labels) %>% 
+  kable() 
+```
+\newpage
+```{r}
+#| label: tbl-report-pb
+#| tbl-cap: Posterior probabilities of direction for each predictor across the regularised regression models (intercept only and intercept and slopes combined)
+
+models2 <- list(
+  Intercepts = fit_report_mice_horseshoe,
+  Slopes = fit_report_mice_horseshoe_slope
+)
+
+pd(models2, predictors, facet_labels) %>% 
+  kable() 
+```
+# Modelling Figures
+Finally, we plot all mansucript figures below.
+
+### Halfeye Plots (Figure 4)
+```{r}
+#| label: Halfeye plots
+#| fig-cap: Halfeye plots combining densities & intervals 
+#| fig-width: 11
+#| fig-height: 8
+
+# posterior draws for all models
+draws_df <- list(
+  fit_report_all_mice_random,
+  fit_report_formal_mice_random,
+  fit_report_informal_mice_random
+) %>%
+  purrr::map(~ as_draws_df(.x, variable = "b_", regex = TRUE)) %>%
+  bind_rows(.id = "model") %>%
+  mutate(model = factor(model, levels = 1:3, labels = c("Any", "Formal", "Informal"))) %>%
+  select(-starts_with("."), -b_Intercept) %>%
+  pivot_longer(-model, names_to = "parameter", values_to = "value") %>%
+  filter(parameter %in% names(facet_labels)) %>%
+  mutate(name = facet_labels[parameter])
+
+# compute credible intervals
+intervals <- draws_df %>%
+  group_by(name, model) %>%
+  summarise(
+    .lower = quantile(value, 0.025),
+    .upper = quantile(value, 0.975),
+    significant = (.lower > 0 | .upper < 0),
+    credible_intervals = ifelse(significant, "95% CI excludes 0", "Includes 0"),
+    .groups = "drop"
+  )
+
+# join summaries back into full posterior draws
+draws_df <- left_join(draws_df, intervals, by = c("name", "model")) %>%
+  mutate(
+    name = forcats::fct_reorder(name, value, .fun = median, .desc = TRUE)
+  )
+
+# plot halfeye plot
+halfeye_plot <- ggplot(draws_df, aes(
+  x = value,
+  y = name,
+  fill = model,
+  color = model,
+  group = model
+)) +
+  stat_halfeye(
+  aes(
+    shape = as.character(credible_intervals)
+  ),
+  .width = c(0.66, 0.95),
+  adjust = 0.6,
+  slab_alpha = 0.4,
+  interval_alpha = 1,
+  point_alpha = 1,
+  interval_size = 1.2,
+  point_size = 2.5,
+  position = position_dodge(width = 0.6)
+  ) +
+ scale_shape_manual(
+  values = c("95% CI excludes 0" = 17, "Includes 0" = 16),
+  name = ""
+  ) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "grey60") +
+  scale_color_viridis_d(
+    name = "Disclosure Channel",
+    aesthetics = c("color", "fill"),  
+    option = "inferno",
+    begin = 0.3,
+    end = 0.9,
+    direction = -1
+  ) +
+  coord_cartesian(xlim = c(-1, 1)) +
+  labs(
+    title = "",
+    x = "Parameter Estimate",
+    y = "",
+    fill = "Disclosure Channel",
+    color = "Disclosure Channel"
+  ) +
+ theme_minimal(base_size = 14, base_family = "sans") +
+  theme(
+    axis.text.y  = element_text(family = "sans", size = 20, face = "bold"),
+    axis.text.x  = element_text(family = "sans", size = 13),
+    legend.title = element_text(family = "sans", size = 18, face = "bold"),
+    legend.text  = element_text(family = "sans", size = 13),
+    legend.position = "bottom",
+    panel.grid   = element_blank(),
+    plot.margin  = margin(10, 10, 10, 10)
+  )
+halfeye_plot
+ggsave(
+  "Figure4.pdf",
+  halfeye_plot,
+  width  = 18,
+  height = 17,
+  dpi    = 300,
+  units  = "cm"
+)
+```
+
+### Country-level Estimates 
+
+We extract coefficients for all three models, then define function to process, label coefficients and combine them before plotting
+
+```{r}
+# country-level coefficients
+coefs_all <- coef(fit_report_all_mice_random)$COUNTRY
+coefs_formal <- coef(fit_report_formal_mice_random)$COUNTRY
+coefs_informal <- coef(fit_report_informal_mice_random)$COUNTRY
+
+# predictor labels
+predictor_names <- c(
+  "Intercept", "Girls (vs Boys)", "Age (per year)", "Premarital sex",
+  "Inequitable gender attitudes", "Enabling parental mediation",
+  "Sex education", "Help-seeking", "Digital skills to report"
+)
+
+# process coefficients
+process_coefs <- function(coefs, report_type) {
+  map_dfr(
+    seq_len(dim(coefs)[[3]]),
+    ~ as.data.frame(coefs[, , .x]) %>%
+      rownames_to_column("country") %>%
+      mutate(
+        report = report_type,
+        parameter = predictor_names[.x]
+      )
+  )
+}
+
+# combine
+combined_coefs <- bind_rows(
+  process_coefs(coefs_all, "All"),
+  process_coefs(coefs_formal, "Formal"),
+  process_coefs(coefs_informal, "Informal")
+) %>%
+  filter(parameter != "Intercept") %>%
+  mutate(
+    credible = ifelse(Q2.5 * Q97.5 > 0, "Excludes 0", "Includes 0"),
+    sig = Q2.5 * Q97.5 > 0
+  )
+```
+
+### Country-level estimates for any disclosure model (Figure 5)
+```{r country-coefs-plot, warning=FALSE}
+#| label: fig-country-coefs-clean
+#| fig-cap: "Country-specific associations between predictors and disclosure. Points show posterior means; lines show 95% credible intervals. Solid elements indicate effects where 95% CI excludes zero; faded elements indicate non-credible effects."
+#| fig-width: 14
+#| fig-height: 10
+
+
+# define regions
+africa_order <- c("Ethiopia", "Kenya", "Mozambique", "Namibia", "Tanzania", "Uganda")
+asia_order <- c("Cambodia", "Indonesia", "Malaysia", "Philippines", "Thailand", "Vietnam")
+
+# prepare data
+plot_coef <- combined_coefs %>%
+  filter(report == "All") %>%
+  mutate(
+    region = case_when(
+      country %in% africa_order ~ "Africa",
+      country %in% asia_order   ~ "Asia",
+      TRUE ~ NA_character_
+    ),
+    country = factor(country, levels = rev(c(africa_order, asia_order))),
+    sig = Q2.5 * Q97.5 > 0
+  ) %>%
+  filter(!is.na(region))
+
+# plot coef for any disclosure model
+countrycoefs <- ggplot(plot_coef, aes(x = Estimate, y = country)) +
+  geom_vline(xintercept = 0, linetype = "solid", linewidth = 0.3, color = "grey40") +
+  geom_segment(
+    data = ~ subset(.x, !sig),
+    aes(x = Q2.5, xend = Q97.5, y = country, yend = country),
+    color = "grey78", linewidth = 0.7
+  ) +
+  geom_point(
+    data = ~ subset(.x, !sig),
+    color = "grey70", size = 2.5, shape = 16
+  ) +
+  geom_segment(
+    data = ~ subset(.x, sig),
+    aes(x = Q2.5, xend = Q97.5, y = country, yend = country, color = region),
+    linewidth = 1.2
+  ) +
+  geom_point(
+    data = ~ subset(.x, sig),
+    aes(color = region),
+    size = 3.2, shape = 16
+  ) +
+
+  scale_color_manual(
+    values = c("Africa" = "#3B0F70", "Asia" = "#E69F00"),
+    name   = NULL
+  ) +
+  guides(color = guide_legend(override.aes = list(linewidth = 1.5, size = 3))) +
+  facet_wrap(~ parameter, scales = "free_x", nrow = 2) +
+  labs(x = "Estimate (log-odds)", y = NULL) +
+  theme_minimal(base_size = 10, base_family = "sans") +
+  theme(
+    strip.background = element_rect(fill = "black", color = NA),
+    strip.text = element_text(color = "white", face = "bold", 
+                           size = 6, family = "sans",
+                           margin = margin(t = 3, b = 3)),
+    panel.background = element_rect(fill = "white", colour = NA),
+    plot.background  = element_rect(fill = "white", colour = NA),
+    panel.border     = element_rect(color = "grey30", fill = NA, linewidth = 0.3),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y      = element_text(size = 9, face = "bold", family = "sans"),
+    axis.text.x      = element_text(size = 8, family = "sans"),
+    axis.title.x     = element_text(size = 10, face = "bold", family = "sans",
+                                    margin = margin(t = 8)),
+    legend.position  = "bottom",
+    legend.text      = element_text(size = 9, family = "sans"),
+    legend.key.width = unit(1, "cm"),
+    plot.margin      = margin(10, 10, 10, 10)
+  )
+
+countrycoefs
+
+ggsave(
+  "Figure5.pdf",
+  countrycoefs,
+  width  = 18,
+  height = 17,
+  dpi    = 300,
+  units  = "cm"
+)
+```
+### Country-level estimates for formal and informal disclosure model (Extended Data Fig 3)
+```{r}
+#| label: fig-formal-informal-combined
+#| fig-cap: "Country-specific associations with disclosure by channel type. Points show posterior means for formal (orange) and informal (red) channels; horizontal lines show 95% credible intervals. Solid points indicate credible effects (95% CI excludes zero); faded points indicate non-credible effects. Dotted horizontal line separates African and Asian countries."
+#| fig-width: 14
+#| fig-height: 18
+
+# country order 
+countries <- c(
+  "Ethiopia","Kenya","Mozambique","Namibia","Tanzania","Uganda",
+  "Cambodia","Indonesia","Malaysia","Philippines","Thailand","Vietnam"
+)
+
+# prepare data
+plot_formalinformal <- combined_coefs %>%
+  dplyr::mutate(
+    country = factor(country, levels = rev(countries)),   
+    y_base  = as.numeric(country),
+    y       = y_base + ifelse(report == "Formal",  +0.20,  -0.20) 
+  )
+
+# plot 
+
+formalinformal_plot <- ggplot(plot_formalinformal, aes(x = Estimate, y = y)) +
+  geom_vline(xintercept = 0, linetype = "solid", linewidth = 0.3, color = "grey30") +
+
+  # Non-credible (grey)
+  geom_linerange(
+    data = ~ subset(.x, !sig),
+    aes(xmin = Q2.5, xmax = Q97.5, linetype = report),
+    linewidth = 0.6, color = "grey75", show.legend = FALSE
+  ) +
+  geom_point(
+    data = ~ subset(.x, !sig),
+    aes(shape = report),
+    size = 2.2, color = "grey60", stroke = 0.3, show.legend = FALSE
+  ) +
+
+  # credible (colored)
+  geom_linerange(
+    data = ~ subset(.x, sig),
+    aes(xmin = Q2.5, xmax = Q97.5, color = report, linetype = report),
+    linewidth = 1.0
+  ) +
+  geom_point(
+    data = ~ subset(.x, sig),
+    aes(color = report, shape = report),
+    size = 2.8
+  ) +
+  scale_color_manual(values = c("Formal" = "#3B0F70", "Informal" = "#E69F00"), name = NULL) +
+  scale_shape_manual(values = c("Formal" = 16, "Informal" = 17), name = NULL) +
+  scale_linetype_manual(values = c("Formal" = "solid", "Informal" = "solid"), name = NULL) +
+  facet_wrap(~ parameter, scales = "free_x", nrow = 2) +
+  labs(x = "Estimate (log-odds)", y = NULL) +
+  scale_y_continuous(
+    breaks = seq_along(rev(countries)),
+    labels = rev(countries),
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  theme_minimal(base_size = 10, base_family = "sans") +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "black", color = NA),
+    axis.text.y      = element_text(size = 8, face = "bold", family = "sans"),
+    axis.text.x      = element_text(size = 8, family = "sans"),
+    strip.text       = element_text(color = "white", face = "bold",
+                                    size = 10, family = "sans"),
+    legend.position  = "bottom",
+    legend.key       = element_blank(),
+    legend.key.width = unit(1, "cm"),
+    plot.margin      = margin(6, 6, 6, 6)
+  )
+
+formalinformal_plot
+
+ggsave(
+  "Extended Data Fig.3.tif", 
+  formalinformal_plot,
+  width = 12,
+  height = 20,
+  dpi = 600,
+  compression = "lzw"  
+)
+```
+
+### Credible Associations
+We prepare coefficient data for summarising credible and directional effects
+```{r}
+combined_coefs2 <- combined_coefs %>%
+  mutate(
+    credible = if_else(Q2.5 * Q97.5 > 0, "Credible", "Not credible"),
+    direction = if_else(Estimate > 0, "Positive", "Negative"),
+    country = as.character(country)
+  )
+
+# comparing credible vs non-credible results 
+# by parameter, disclosure and country
+credible_coefs <- combined_coefs2 %>%
+  group_by(
+    parameter, report, country, credible, direction
+  ) %>%
+  summarise(n = n()) %>%
+  group_by(
+    parameter, report, country
+  ) %>%
+  mutate(percent = n / sum(n)) %>%
+  mutate(
+    x = interaction(credible, direction, sep = " & ")
+  ) %>%
+  select(
+    -credible, -direction
+  ) %>%
+  pivot_wider(
+    names_from = x,
+    values_from = percent
+  ) %>%
+  mutate(
+    across(everything(), ~ ifelse(is.na(.), 0, .))
+  )
+```
+
+Now we print a table of credible associations
+```{r}
+# Country-specific posterior coefficients
+combined_coefs <- combined_coefs %>%
+  mutate(
+    prob_positive     = if_else(
+      Estimate > 0, 
+      pnorm(Estimate / Est.Error), 
+      1 - pnorm(Estimate / Est.Error)
+    ),
+    credible_interval = if_else(Q2.5 * Q97.5 > 0, "Yes", "No")
+  )
+
+coef_supplementary <- combined_coefs %>%
+  mutate(
+    across(c(Estimate, `Q2.5`, `Q97.5`), ~ round(.x, 3)),
+    `Pr(>0)` = scales::percent(prob_positive, accuracy = 0.1)
+  ) %>%
+  select(
+    Country       = country,
+    Model         = report,
+    Parameter     = parameter,
+    Estimate,
+    `Q2.5`,
+    `Q97.5`,
+    `Pr(>0)`,
+    `Excludes 0?` = credible_interval
+  ) %>%
+  arrange(Country, Model, Parameter)
+
+
+coef_supplementary  %>%
+  kable(
+    booktabs = TRUE,
+    caption  = "Country-specific posterior coefficients (log-odds) for disclosure models (All, Formal, Informal)."
+  ) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position", "scale_down"),
+    font_size = 8
+  ) %>%
+  collapse_rows(columns = 1:2, valign = "top")
+
+
+```
+
+```{r}
+#| label: modelsfrom 3a_disclosure_scriptfor-diagnostics
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+#| output: false
+fit_report_all_glm <- brm(
+  toldall | weights(wgt_scaled) ~ 
+    sex + age + presex + nindex + 
+    parentmediate + sexed + helpseeking + 
+    digitalskills,
+  data = d_report,
+  family = bernoulli(),
+  control = list(adapt_delta = 0.99),
+  file = "models/brm-report-all-glm"
+)
+
+fit_report_all <- brm(
+  model_toldall,
+  data = d_report,
+  family = bernoulli(),
+  silent = 0,
+  file = "models/brm-report-all",
+  iter = ITER,
+  control = list(adapt_delta = 0.99)
+)
+```
+
+```{r}
+#| label: plabel
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+predictor_names <- c(
+  "b_sex1" = "Girl (vs Boy)",
+  "b_age" =  "Age (per year)",
+  "b_presex1" = "Premarital sex",
+  "b_nindex" = "Inequitable gender attitudes",
+  "b_parentmediate" = "Enabling parental mediation",
+  "b_sexed1" = "Sex education",
+  "b_helpseeking1" = "Help-seeking",
+  "b_digitalskills" = "Digital skills to report"
+)
+```
+
+### Model Comparisons (Extended Data Fig 4)
+Finally, we show main results of those models for robustness checking
+```{r}
+#| label: fig-modelcomparisons
+#| fig-cap: "Comparing all permutations of models"
+#| fig-width: 17
+#| fig-height: 10
+#| fig-pos: "H"
+
+# function again to summarise posterior draws 
+summarise_draws_comp <- function(fit, variable = c("b_", "sd_", "cor_")) {
+  fit %>%
+    as_draws_df(variable = variable, regex = TRUE) %>%
+    summarise_draws(
+      mean, sd, ~ quantile2(.x, c(0.025, 0.975))
+    )
+}
+
+# summary function to all the models
+comparisons <- list(
+  fit_report_all_glm,
+  fit_report_all,
+  fit_report_all_mice_glm,
+  fit_report_all_mice,
+  fit_report_all_mice_random,
+  fit_report_mice_horseshoe,
+  fit_report_mice_horseshoe_slope
+) %>% 
+  purrr::map(~ summarise_draws_comp(.x, variable = "^b_")) %>% 
+  dplyr::bind_rows(.id = "model") %>%
+  dplyr::filter(variable != "b_Intercept",
+                variable %in% names(predictor_names)) %>%
+  dplyr::mutate(
+    model = factor(
+      model,
+      levels = 1:7,
+      labels = c(
+        "No Multiple Imputations + GLM",
+        "No Multiple Imputations + Random Intercepts",
+        "Multiple Imputations + GLM",
+        "Multiple Imputations + Random Intercepts",
+        "Multiple Imputations + Random Slopes",
+        "Multiple Imputations + Random Intercepts + Regularised",
+        "Multiple Imputations + Random Slopes + Regularised"
+      )
+    ),
+    label = dplyr::recode(variable, !!!predictor_names),
+    label = forcats::fct_reorder(label, mean),
+    significant = (q2.5 > 0 | q97.5 < 0)
+  )
+
+# plot
+comparison <- ggplot(comparisons, aes(mean, label, color = model, alpha = significant)) +
+  geom_vline(xintercept = 0, linetype = "dotted", linewidth = 0.3, color = "grey50") +
+  geom_pointinterval(
+    aes(xmin = q2.5, xmax = q97.5),
+    position = position_dodge(width = 0.6),
+    fatten_point = 3,
+    size = 1.3
+  ) +
+  scale_x_continuous("Estimate", breaks = extended_breaks(n = 7)) +
+  scale_alpha_manual(
+    name = "95% CI excludes 0",
+    values = c("TRUE" = 1, "FALSE" = 0.2)
+  ) +
+  scale_color_brewer(name = "Model", palette = "Dark2") +
+  guides(color = guide_legend(reverse = TRUE)) +
+  theme_minimal(base_family = "sans", base_size = 16) +
+  theme(
+    axis.title.y       = element_blank(),
+    axis.text.y        = element_text(size = 18, face = "bold", family = "sans"),
+    axis.text.x        = element_text(size = 13, family = "sans"),
+    axis.title.x       = element_text(size = 18, face = "bold", family = "sans"),
+    legend.title       = element_text(size = 18, face = "bold", family = "sans"),
+    legend.text        = element_text(size = 15, family = "sans"),
+    legend.key.size    = unit(1.4, "lines"),
+    panel.border       = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(color = "grey85"),
+    plot.margin        = margin(20, 60, 20, 20)
+  )
+
+comparison 
+
+ggsave(
+  "Extended Data Fig.4.tif", 
+  comparison,
+  width = 16, 
+  height = 15, 
+  dpi = 300, 
+  units = "in",
+  compression = "lzw"  
+)
+```
+
+\newpage
+# Model Checking 
+
+Because models were fit using multiply imputed datasets via brm_multiple, we took additional steps to ensure robust convergence diagnostics beyond default summaries. Standard diagnostics such as R̂ can be misleading when computed by pooling chains across imputations. This is because chains are technically independent across imputations and may exhibit good within-imputation mixing but poor convergence when aggregated—especially for parameters linked to variables with high missingness (e.g., the nindex).
+
+To address this, we computed $\hat{R}$ separately for each set of chains corresponding to each of the M imputed datasets. For each parameter, we report the worst (i.e., highest)̂ $\hat{R}$  value observed across imputations. We also examined the presence of divergent transitions across imputed datasets to identify potential sampling issues in the posterior geometry. This conservative approach allows us to more effectively identify any convergence issues that might otherwise be masked by averaging. In addition to numerical convergence checks, we conducted graphical diagnostics for each model, including:
+
+1. Trace plots for fixed and group-level effects (b_, sd_);
+2. Histograms of $\hat{R}$ values across all parameters, to assess overall convergence distribution;
+3. Posterior predictive checks, stratified by sex, to assess model fit to the observed data.
+
+These visualisations are shown for each main model below.
+```{r}
+#| label: modelsfrom 2b_CSEAmodellingscript
+#| include: false 
+#| message: false
+#| warning: false
+#| cache: true
+fit_victim <- brm(
+  victim | weights(wgt_scaled) ~ sex * age + (sex * age | COUNTRY),
+  data = d_victim,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  iter = ITER,
+  file = "models/brm-victim"
+)
+fit_urban2 <- brm(
+  victim | weights(wgt_scaled) ~ sex * age + urbanrural + (sex * age  | COUNTRY),
+  data = d_victim,
+  family = bernoulli(),
+  silent = 0,
+  backend = "cmdstanr",
+  iter = ITER,
+  file = "models/brm-urban2",
+)
+```
+
+The following visualises the worst-case $\hat{R}$ values across each of the $M$ multiply imputed datasets, grouping chains by imputation.
+```{r}
+#' Find worst Rhat for each parameter among M sets of K chains
+#' This is useful for a brm_multiple model fitted to MICE data as it calculates
+#' Rhat separately for each MI dataset.
+#' @param model a brms model fit object (brm_multiple)
+#' @param m Number of imputed datasets
+#' @param k Number of chains per model (usually 4; the brm_multiple model will have m*k chains)
+
+
+rhat_worst_hist <- function(model, m, k) {
+  as_draws_df(model, variable = c("b_", "sd_", "cor_"), regex = TRUE) %>% 
+    
+    # index datasets (i.e., sets of chains belonging to the same imputed data)
+    mutate(chainset = ((.chain) - 1) %/% k) %>% 
+    
+    # calculate Rhat for each variable and chainset
+    group_by(chainset) %>%
+    group_modify(~ summarise_draws(.x, rhat)) %>% 
+    ungroup() %>% 
+    filter(rhat == max(abs(rhat)), .by = variable) %>% 
+    ggplot(aes(rhat)) +
+    geom_histogram(binwidth = 0.01, fill = "gray", color = "black") +
+    scale_x_continuous(
+      labels = ~ number(.x, accuracy = 0.001)
+    ) +
+    scale_y_continuous(
+      expand = expansion(c(0, 0.1))
+    ) +
+    labs(x = "Rhat", y = "Frequency") +
+    theme_minimal() +
+    theme(
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 8)
+    )
+}
+```
+Set predictor names 
+```{r}
+predictor_names <- c(
+  # fixed effects
+  "b_Intercept"        = "Intercept",
+  "b_sex1"             = "Girl (vs Boy)",
+  "b_age"              = "Age (per year)",
+  "b_presex1"          = "Premarital sex",
+  "b_nindex"           = "Inequitable gender attitudes",
+  "b_parentmediate"    = "Enabling parental mediation",
+  "b_sexed1"           = "Sex education",
+  "b_helpseeking1"     = "Help-seeking",
+  "b_digitalskills"    = "Digital skills",
+  "b_sex1:age"         = "Girl × Age interaction",
+  "b_urbanruralRural"  = "Rural (vs Peri-urban)",
+  "b_urbanruralUrban"  = "Urban (vs Peri-urban)",
+  
+  # random effects (SDs) 
+  "sd_COUNTRY__Intercept" = "SD: Country Intercept",
+  "sd_COUNTRY__sex1"      = "SD: Country × Gender",
+  "sd_COUNTRY__age"       = "SD: Country × Age",
+  "sd_COUNTRY__sex1:age"  = "SD: Country × (Gender × Age)",
+   "sd_COUNTRY__presex1"       = "SD: Country × Premarital-sex",
+  "sd_COUNTRY__nindex"        = "SD: Country × Gender attitudes",
+  "sd_COUNTRY__parentmediate" = "SD: Country × Parental mediation",
+  "sd_COUNTRY__sexed1"        = "SD: Country × Sex education",
+  "sd_COUNTRY__helpseeking1"  = "SD: Country × Help-seeking",
+  "sd_COUNTRY__digitalskills" = "SD: Country × Digital skills",
+  
+  # correlations 
+  "cor_COUNTRY__Intercept__sex1"   = "Cor: Intercept–Sex",
+  "cor_COUNTRY__Intercept__age"    = "Cor: Intercept–Age",
+  "cor_COUNTRY__sex1__age"         = "Cor: Sex–Age"
+
+)
+```
+
+```{r}
+checks <- function(model, m = M, k = 4, predictor_labels = predictor_names) {
+  
+  # labeller for facet strips
+  param_labeller <- function(x) {
+    ifelse(x %in% names(predictor_labels),
+           predictor_labels[x],
+           x)
+  }
+  
+  # trace plots for fixed and random effects
+  pa <- mcmc_plot(
+    model,
+    type    = "trace",
+    variable = c("b_", "sd_"),
+    regex   = TRUE,
+    facet_args = list(
+      labeller = ggplot2::labeller(parameter = param_labeller)
+    )
+  ) +
+    labs(title = "A. Trace Plots", x = "Iteration", y = "Parameter") +
+    theme_minimal() +
+    theme(
+      plot.title  = element_text(size = 10, face = "bold"),
+      axis.title  = element_text(size = 10),
+      axis.text   = element_text(size = 8),
+      axis.text.y = element_text(hjust = 1)
+    )
+  
+  # r-hat histogram 
+  pb <- rhat_worst_hist(model, m, k) +
+    labs(title = "B. R̂ Histogram") +
+    theme(
+      plot.title = element_text(size = 10, face = "bold")
+    )
+  
+  # posterior predictive check by sex
+  pc <- pp_check(
+    model,
+    type  = "bars_grouped",
+    group = "sex"
+  ) +
+    labs(
+      title = "C. Posterior Predictive",
+      x = "Predicted", y = "Frequency"
+    ) +
+    scale_x_continuous(labels = ~ number(.x, accuracy = 0.001)) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 10, face = "bold"),
+      axis.title = element_text(size = 10),
+      axis.text  = element_text(size = 8)
+    )
+  
+  # combine plots
+  (pa / (pb | pc)) +
+    plot_layout(heights = c(7, 3)) +
+    plot_annotation(tag_levels = NULL) &
+    theme(legend.position = "none")
+}
+```
+\newpage
+R-hat values slightly exceeded 1.01 for a few parameters across imputations. These deviations likely reflect expected variability across imputed datasets, rather than just convergence failures. 
+
+To formalize this evaluation, we tabulate convergence summaries below. For each model, we report the worst R-hat across imputations and the total number of divergent transitions observed. E-BFMI is not available for models fit via multiple imputation (brm_multiple), as pooling across imputed datasets does not yield a single joint sampler trajectory
+```{r, results='asis'}
+#| label: tbl-indep
+#| tbl-cap: "Model convergence diagnostics across multiply imputed datasets"
+
+# energy extraction helper for E-BFMI
+.get_energies <- function(fit) {
+  if ("CmdStanMCMC" %in% class(fit)) {
+    sd <- tryCatch(fit$sampler_diagnostics(), error = function(e) NULL)
+    if (!is.null(sd) && "energy__" %in% names(sd)) return(as.numeric(sd$energy__))
+  }
+  if ("stanfit" %in% class(fit)) {
+    sp <- tryCatch(rstan::get_sampler_params(fit, inc_warmup = FALSE), error = function(e) NULL)
+    if (!is.null(sp)) return(as.numeric(unlist(lapply(sp, function(m) m[, "energy__"]))))
+  }
+  numeric(0)
+}
+
+get_ebfmi <- function(model) {
+  E <- unlist(lapply(model$fits, .get_energies))
+  if (length(E) < 10) return(NA_real_)
+  var(diff(E)) / var(E)
+}
+
+get_divergences <- function(model) {
+  total_divs <- 0
+  for (fit in model$fits) {
+    if ("CmdStanMCMC" %in% class(fit)) {
+      diag <- tryCatch(fit$diagnostic_summary(), error = function(e) NULL)
+      if (is.data.frame(diag) && "divergent__" %in% names(diag))
+        total_divs <- total_divs + sum(diag$divergent__, na.rm = TRUE)
+    } else if (!is.null(fit@sim$diagnostics)) {
+      total_divs <- total_divs + tryCatch(
+        sum(fit@sim$diagnostics[,, "divergent__"], na.rm = TRUE), error = function(e) 0
+      )
+    }
+  }
+  total_divs
+}
+
+get_treedepth_hits <- function(model, max_td = 10) {
+  total <- 0L
+  for (fit in model$fits) {
+    if ("CmdStanMCMC" %in% class(fit)) {
+      ds <- tryCatch(fit$diagnostic_summary(), error = function(e) NULL)
+      if (is.data.frame(ds) && "max_depth__" %in% names(ds))
+        total <- total + sum(ds$max_depth__ >= max_td, na.rm = TRUE)
+    }
+  }
+  total
+}
+
+model_summary_convergence <- function(model, k = 4, model_name = "Model") {
+  draws <- posterior::as_draws_df(model, variable = c("b_", "sd_", "cor_"), regex = TRUE) %>%
+    mutate(chainset = (.chain - 1L) %/% k)
+
+  diag <- draws %>%
+    group_by(chainset) %>%
+    group_modify(~ posterior::summarise_draws(.x, rhat, ess_bulk, ess_tail)) %>%
+    ungroup()
+
+  tibble(
+    Model          = model_name,
+    Worst_Rhat     = max(diag$rhat,     na.rm = TRUE),
+    Min_ESS_bulk   = min(diag$ess_bulk, na.rm = TRUE),
+    Min_ESS_tail   = min(diag$ess_tail, na.rm = TRUE),
+    Divergences    = get_divergences(model),
+    Treedepth_hits = get_treedepth_hits(model),
+    E_BFMI         = round(get_ebfmi(model), 3)
+  )
+}
+
+summary_table <- bind_rows(
+  model_summary_convergence(fit_report_all_mice_random,      model_name = "Disclosure: All"),
+  model_summary_convergence(fit_report_formal_mice_random,   model_name = "Disclosure: Formal"),
+  model_summary_convergence(fit_report_informal_mice_random, model_name = "Disclosure: Informal"),
+  model_summary_convergence(fit_report_mice_horseshoe,       model_name = "Disclosure: Horseshoe (RI)"),
+  model_summary_convergence(fit_report_mice_horseshoe_slope, model_name = "Disclosure: Horseshoe (RS)")
+)
+
+summary_table %>%
+  mutate(Worst_Rhat = sprintf("%.6f", Worst_Rhat)) %>%
+  kable(
+    col.names = c("Model", "Worst R̂", "Min ESS (bulk)", "Min ESS (tail)",
+                  "Divergences", "Treedepth hits", "E-BFMI"),
+    booktabs = TRUE, longtable = TRUE, escape = FALSE
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "repeat_header", "scale_down"),
+                font_size = 9) %>%
+  column_spec(1, width = "6cm") %>%
+  column_spec(2, width = "3cm") %>%
+  row_spec(which(summary_table$Divergences > 0 | summary_table$Worst_Rhat >= 1.05), bold = TRUE)
+```
+\newpage
+```{r}
+#| label: fig-ppcheck-vic
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics of the demographic model for technology-facilitated CSEA disclosure, including trace plots, R̂ histogram, and posterior predictive check."
+checks(fit_victim)
+```
+
+```{r}
+#| label: fig-ppcheck-urban
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics of the urbanisation model for technology-facilitated CSEA disclosure, including trace plots, R̂ histogram, and posterior predictive check."
+checks(fit_urban2)
+```
+
+```{r}
+#| label: fig-ppcheck-report-1
+#| fig-height: 8.4
+#| fig-width: 10
+#| fig-cap: "Graphical diagnostics for the disclosure model with random intercepts and missingness model, including posterior predictive density."
+checks(fit_report_all)
+```
+\newpage
+```{r}
+#| label: fig-ppcheck-int-mice-4
+#| fig-height: 8.4
+#| fig-width: 10
+#| fig-cap: "Graphical diagnostics for the disclosure model with random slopes and an age-by-sex interaction, including posterior predictive density."
+checks(fit_report_all_mice_random_interaction, m = M, k = 4)
+```
+
+\newpage
+```{r}
+#| label: fig-ppcheck-report-eff
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the disclosure model with random effects only, including posterior predictive density."
+checks(fit_report_all_mice, m = M, k = 4)
+```
+
+```{r}
+#| label: fig-ppcheck-report-eff2
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the formal disclosure model with random effects only, including posterior predictive density."
+checks(fit_report_formal_mice, m = M, k = 4)
+```
+
+\newpage
+```{r}
+#| label: fig-ppcheck-report-eff3
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the informal disclosure model with random effects only, including posterior predictive density."
+checks(fit_report_informal_mice, m = M, k = 4)
+```
+
+\newpage
+```{r}
+#| label: fig-ppcheck-report-mice-1
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the disclosure model with random slopes, including posterior predictive density."
+checks(fit_report_all_mice_random, m = M, k = 4)
+```
+\newpage
+```{r}
+#| label: fig-ppcheck-formal-mice-2
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the formal disclosure model with random slopes, including posterior predictive density."
+checks(fit_report_formal_mice_random, m = M, k = 4)
+```
+\newpage
+```{r}
+#| label: fig-ppcheck-informal-mice-3
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the informal disclosure model with random slopes, including posterior predictive density."
+checks(fit_report_informal_mice_random, m = M, k = 4)
+```
+
+```{r}
+#| label: fig-ppcheck-horshoe
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the horseshoe model with random slopes, including posterior predictive density."
+checks(fit_report_mice_horseshoe, m = M, k = 4)
+
+```
+
+```{r}
+#| label: fig-ppcheck-horshoeslope
+#| fig-height: 8.4
+#| fig-width: 12
+#| fig-cap: "Graphical diagnostics for the horseshoe model with random slopes, including posterior predictive density."
+checks(fit_report_mice_horseshoe_slope, m = M, k = 4)
+
+```

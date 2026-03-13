@@ -1,0 +1,1186 @@
+---
+title: Technology mediation in child sexual exploitation and abuse in Africa and Asia
+authors: Ghai et al. 
+subtitle: Population burden script
+format: 
+  typst:
+    toc: true
+    toc-depth: 2
+  pdf:
+    toc: true
+    toc-depth: 2
+    echo: false
+    number-sections: true
+    fig_caption: true
+    fig_height: 12
+    fig_width: 8
+    latex_engine: xelatex
+    fontsize: 10pt
+    mainfont: "Times New Roman"
+    header-includes:
+      - \usepackage{pdflscape}     
+      - \usepackage{geometry}
+      - \usepackage{graphicx}      
+      - \geometry{margin=1in}     
+      - \usepackage{longtable} 
+      - \usepackage{adjustbox}
+  html:
+    toc: true
+    toc-depth: 2
+    self-contained: true
+    number_sections: true
+    fig_caption: true
+    css: assets/styles.css
+    highlight: "pygments"
+---
+
+# Preface
+
+This script estimates the population-level burden of technology-facilitated child sexual exploitation and abuse (CSEA) among children aged 12-17 across 12 countries in Africa and Asia. We employ a double-denominator approach that combines: 
+
+(1) **Prevalence estimates among internet-using children from the Disrupting Harms child survey**: First, we estimate prevalence across the 12 countries using the Disrupting Harm (DH) child survey (n = 11,912). Our primary outcome is the proportion of internet-using children aged 12–17 who experienced technology-facilitated CSEA through social media or gaming platforms in 2020–2021. This denominator answers: What proportion of internet-using children experience one or more forms of technology-facilitated CSEA? These estimates are design-weighted to reflect the national population of internet-using children in each country.
+
+(2) **Overall prevalence among all children (population burden)**: Second, we estimate overall prevalence among all children aged 12–17 by combining internet exposure rates with prevalence among internet using children. Internet exposure is derived from the DH household survey (approximately 1,500–10,000 households per country), which asks caregivers whether children in the household use the internet through any device or location. This provides the proportion of all 12–17-year-olds who are exposed to the online environment. We then estimate, for each country, the proportion of all children aged 12–17 who experience technology-facilitated CSEA by combining two quantities: (a) the share of children who are exposed to internet and (b) the prevalence of technology-facilitated CSEA among internet-using children. 
+
+We also provide propagate uncertainty using Monte Carlo simulation to generate 95% confidence intervals for both prevalence estimates and absolute case counts. To validate our internet exposure estimates, we compare DH-based exposure rates with International Telecommunication Union (ITU) youth internet indicators, while noting differences in age bands and reference periods. The analysis produces forest plots, scatterplots, and comparison heatmaps for visualisation.
+```{r}
+#| label: document-options
+#| include: false
+
+knitr::opts_chunk$set(
+  cache = TRUE,
+  echo = TRUE
+)
+```
+
+# Libraries
+```{r, message=FALSE}
+# Load packages 
+library(gtsummary)
+library(dplyr)
+library(tidyverse)
+library(DataExplorer)
+library(survey)
+library(janitor)
+library(rnaturalearth)
+library(sf)
+library(grid)
+library(gridExtra)
+library(png)
+library(gridGraphics)
+library(ggrepel)
+library(officer)
+library(flextable)
+library(patchwork)
+library(kableExtra)
+library(colorspace)
+library(readxl)
+library(stringr)
+library(readr)
+library(scales)
+library(glue)
+library(ggtext)
+library(srvyr)
+library(gt)
+library(cowplot)
+library(grid)
+```
+We load processed child survey data
+```{r raw load, echo = FALSE}
+d_victim <- readRDS("data-raw/victim_dh.rds")
+```
+
+# Double Denominator Calculations
+
+We now load and combine three data sources to estimate population-level prevalence: (1) DH child survey microdata providing prevalence among internet users (ocsea_df), (2) DH household denominators providing internet exposure rates and population estimates for children aged 12-17 (DH household estimates), and (3) ITU data on internet use by age and gender for validation and comparison.
+
+```{r data-paths, echo=FALSE}
+dh_path <- "Internetusers.xlsx"
+# Read ITU data (age)
+itu_path <- "Individuals using the Internet.csv"
+# Read ITU data (gender)
+itu_pathg <- "Individuals using the Internet_gender.csv"
+```
+
+## Setting Parameters and Utility Functions
+
+We define key constants for uncertainty propagation and create helper functions for data harmonization across sources.
+```{r setup-parameters}
+# 3 percentage points 
+SE_PI_DEFAULT   <- 0.03   
+ # 5 percentage points 
+SE_PREV_DEFAULT <- 0.05  
+# 2020 year
+TARGET_YEAR     <- 2020
+
+# utility functions
+bound01 <- function(x, eps = 1e-6) pmin(pmax(x, eps), 1 - eps)
+fmt_pct <- function(x, d = 1) sprintf(paste0("%.", d, "f%%"), 100 * x)
+fmt_int <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+
+# function for countries name matching
+harmonize_country <- function(x) {
+  x <- as.character(x)
+  x <- dplyr::case_match(x,
+    "Viet Nam" ~ "Vietnam",
+    "United Republic of Tanzania" ~ "Tanzania",
+    .default = x
+  )
+  str_to_title(x)
+}
+
+# closest year!
+pick_nearest_year <- function(df, target = TARGET_YEAR) {
+  df %>%
+    group_by(country) %>%
+    slice_min(abs(year - target), n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    select(country, year_itu = year, pi_15_24)
+}
+```
+## Cleaning ITU Youth Exposure Data
+
+We reshape ITU data from wide (years as columns) to long format, filter to youth aged 15-24, and select the year closest to 2020 for each country to align with DH survey timing.
+```{r clean-itu-data, warning =FALSE}
+# load and clean ITU youth (15-24) exposure data
+itu_raw <- read_csv(itu_path, show_col_types = FALSE) %>%
+  clean_names()
+
+itu_long <- itu_raw %>%
+  pivot_longer(
+    cols = matches("^x\\d{4}$"),
+    names_to = "year",
+    names_pattern = "^x(\\d{4})$",
+    values_to = "value"
+  ) %>%
+  mutate(
+    country   = harmonize_country(economy),
+    year      = as.integer(year),
+    is_youth  = str_detect(
+      str_to_lower(disaggregation),
+      "15\\s*to\\s*24|15–24|15-24"
+    ),
+    value_num = suppressWarnings(readr::parse_number(as.character(value))),
+    exposure  = if_else(value_num > 1, value_num / 100, value_num)
+  ) %>%
+  filter(
+    is_youth,
+    !is.na(country),
+    !is.na(year),
+    !is.na(exposure)
+  ) %>%
+  transmute(
+    country,
+    year,
+    pi_15_24 = bound01(exposure)
+  ) %>%
+  arrange(country, year)
+
+itu_youth_2020 <- pick_nearest_year(itu_long, TARGET_YEAR)
+```
+## Processing DH Household Denominators
+
+We extract internet exposure rates for children aged 12-17 from household survey data. Where possible, we calculate standard errors from survey counts; otherwise we flag countries requiring default SE values in uncertainty propagation.
+```{r clean-dh-denominators, warning =FALSE}
+# load dh household denominators
+dh_raw <- read_excel(dh_path) %>%
+  clean_names() %>%
+  mutate(country = harmonize_country(country))
+
+# convert numeric columns
+numeric_cols <- c(
+  "with_internet",
+  "no_internet",
+  "total",
+  "population_estimate_12_17_yr_olds_2020",
+  "number_without_internet_access",
+  "population_estimate_15_year_olds",
+  "no_internet_15"
+)
+
+numeric_cols <- intersect(numeric_cols, names(dh_raw))
+dh_raw[numeric_cols] <- lapply(dh_raw[numeric_cols], as.numeric)
+
+# calculate internet exposure and standard errors
+df_denoms <- dh_raw %>%
+  mutate(
+    # check with_internet a proportion or a count
+    is_proportion = !is.na(with_internet) & with_internet <= 1,
+    is_count      = !is.na(with_internet) & with_internet > 1,
+
+    # exposure from counts
+    exposure_from_counts = if_else(
+      is_count & !is.na(total) & total > 0,
+      with_internet / total,
+      NA_real_
+    ),
+
+    se_from_counts = if_else(
+      is_count & !is.na(total) & total > 0,
+      sqrt(exposure_from_counts * (1 - exposure_from_counts) / total),
+      NA_real_
+    ),
+
+    # exposure from proportions 
+    exposure_from_proportion = if_else(is_proportion, with_internet, NA_real_),
+
+    exposure_from_no_internet = if_else(
+      !is.na(no_internet) & no_internet <= 1,
+      1 - no_internet,
+      NA_real_
+    ),
+
+    exposure_from_population = if_else(
+      !is.na(population_estimate_12_17_yr_olds_2020) &
+        population_estimate_12_17_yr_olds_2020 > 0 &
+        !is.na(number_without_internet_access),
+      1 - (number_without_internet_access / population_estimate_12_17_yr_olds_2020),
+      NA_real_
+    ),
+
+    # counts, then proportion
+    # then no_internet, then population
+    pi_12_17 = bound01(coalesce(
+      exposure_from_counts,
+      exposure_from_proportion,
+      exposure_from_no_internet,
+      exposure_from_population
+    )),
+
+    # se only available from survey counts (capped at 0.05)
+    se_pi = if_else(!is.na(se_from_counts), pmin(se_from_counts, 0.05), NA_real_),
+
+    N_12_17 = population_estimate_12_17_yr_olds_2020
+  ) %>%
+  select(country, pi_12_17, N_12_17, se_pi) %>%
+  distinct() %>%
+  group_by(country) %>%
+  slice(1) %>%
+  ungroup()
+
+df_denoms
+```
+
+## Calculating Prevalence Among Internet Users
+
+We use DH child survey microdata to estimate technology-facilitated CSEA prevalence among internet-using children in 12 countries. We calculate effective sample sizes using Kish's method to account for survey weights, then derive standard errors for uncertainty propagation.
+```{r calculate-prevalence}
+
+# calculate prevalence among internet users from child survey
+prevalence_internet <- d_victim %>%
+  mutate(country = harmonize_country(as.character(COUNTRY))) %>%
+  group_by(country) %>%
+  summarise(
+    total_weighted   = sum(wgt_scaled, na.rm = TRUE),
+    victims_weighted = sum(wgt_scaled * (victim == 1), na.rm = TRUE),
+    prev_dh          = victims_weighted / total_weighted,
+
+    # kish effective sample size
+    n_effective = {
+      sum_weights <- sum(wgt_scaled, na.rm = TRUE)
+      sum_squared <- sum(wgt_scaled^2, na.rm = TRUE)
+      if_else(
+        is.finite(sum_squared) & sum_squared > 0,
+        sum_weights^2 / sum_squared,
+        NA_real_
+      )
+    },
+
+    se_prev = if_else(
+      is.finite(n_effective) & n_effective > 0,
+      sqrt(prev_dh * (1 - prev_dh) / n_effective),
+      NA_real_
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    is_edge = (prev_dh %in% c(0, 1)) & (is.na(se_prev) | se_prev == 0),
+    prev_dh = if_else(is_edge, bound01(prev_dh, 1e-6), prev_dh),
+    se_prev = if_else(is_edge, NA_real_, se_prev)
+  ) %>%
+  select(-is_edge)
+
+# combine prevalence and exposure data
+base <- prevalence_internet %>%
+  inner_join(df_denoms, by = "country") %>%
+  mutate(
+    pi_12_17    = bound01(pi_12_17),
+    prev_ALL    = prev_dh * pi_12_17,
+    victims_ALL = prev_ALL * N_12_17
+  )
+```
+
+## Checking Standard Error Availability
+
+We assess how many countries have calculable standard errors versus those requiring defaults, informing our conservative uncertainty propagation approach.
+```{r check-standard-errors}
+# exposure ses
+exposure_summary <- df_denoms %>%
+  summarise(
+    countries   = n(),
+    with_se     = sum(!is.na(se_pi)),
+    missing_se  = sum(is.na(se_pi)),
+    pct_with_se = round(100 * with_se / countries, 1)
+  )
+exposure_summary # 13 includes row total
+
+# prevalence ses
+prevalence_summary <- prevalence_internet %>%
+  summarise(
+    countries   = n(),
+    with_se     = sum(!is.na(se_prev)),
+    missing_se  = sum(is.na(se_prev)),
+    pct_with_se = round(100 * with_se / countries, 1)
+  )
+
+prevalence_summary
+
+# combined check
+combined_summary <- prevalence_internet %>%
+  select(country, se_prev) %>%
+  left_join(
+    df_denoms %>% select(country, se_pi),
+    by = "country"
+  ) %>%
+  summarise(
+    countries      = n(),
+    both_calculated = sum(!is.na(se_prev) & !is.na(se_pi)),
+    any_default     = sum(is.na(se_prev) | is.na(se_pi))
+  )
+
+combined_summary
+```
+
+## Uncertainty Propagation for Population Prevalence Estimates
+
+We calculate population-level prevalence by combining prevalence among internet users (child survey) with internet exposure (household survey). Overall prevalence equals prevalence among users multiplied by internet exposure (P_overall = P_users × P_exposure). We propagate uncertainty from both components using Monte Carlo simulation to produce 95% confidence intervals for overall prevalence and estimated counts. For countries missing standard errors, we apply conservative defaults exceeding the 75th percentile of observed values. These defaults affect confidence interval width only, not point estimates. We treat child and household surveys as statistically independent given their separate sampling frames and field operations.
+
+**Monte Carlo approach:**
+1. For each country, we generate 5,000 random draws from the sampling distribution of each component.
+2. We assume approximate normality on the logit scale:  
+   - Mean = point estimate (logit-transformed)  
+   - SD = survey-design standard error (or conservative default) transformed to the logit scale using the delta method.
+3. Each draw is inverse-logit transformed: probability = exp(logit) / (1 + exp(logit)).
+4. We bound all probabilities away from 0 and 1 (e.g. between 10⁻⁶ and 1 − 10⁻⁶) to avoid extreme-value instability.
+5. Overall prevalence for each draw = (exposure draw) × (prevalence draw).
+6. 95% CI = 2.5th and 97.5th percentiles across 5,000 draws.
+
+Rationale for our approach: (1) Logit transformation: standard approach for bounded proportions (0–1), though less accurate at extreme values. (2) Independence assumption: we treat child and household surveys as statistically independent given their separate sampling frames, respondents, and field operations. This is appropriate for sampling error but may underestimate uncertainty from shared geographic clustering. (3) Fixed population counts: national population estimates (UN World Population Prospects year 2020) treated as known constants. (4) Conservative defaults: for settings where standard errors cannot be calculated directly, we use conservative default SEs (5 percentage points for prevalence among users and 3 percentage points for internet exposure) to avoid false precision.
+
+Point estimates of overall prevalence are calculated as direct products (exposure × prevalence among users) and do not depend on the Monte Carlo simulation or default SE assumptions: these affect only confidence interval widths.
+```{r propagate-uncertainty}
+propagate_burden <- function(est_child, df_denoms, n_draws = 5000,
+                             se_prev_default     = SE_PREV_DEFAULT,
+                             se_exposure_default = SE_PI_DEFAULT,
+                             eps = 1e-6, se_floor = 1e-4, seed = 123) {
+  set.seed(seed)
+  
+  # prepare data
+  dat <- est_child %>%
+    inner_join(df_denoms, by = "country") %>%
+    mutate(
+      prev_users = pmax(pmin(prev_dh,   1 - eps), eps),
+      exposure   = pmax(pmin(pi_12_17,  1 - eps), eps),
+      se_prev     = pmax(coalesce(se_prev, se_prev_default), se_floor),
+      se_exposure = pmax(coalesce(se_pi,   se_exposure_default), se_floor),
+      overall_point = prev_users * exposure,
+      logit_prev     = qlogis(prev_users),
+      logit_exposure = qlogis(exposure),
+      se_logit_prev     = se_prev     / (prev_users * (1 - prev_users)),
+      se_logit_exposure = se_exposure / (exposure   * (1 - exposure))
+    )
+  
+  n_countries   <- nrow(dat)
+  overall_lower <- numeric(n_countries)
+  overall_upper <- numeric(n_countries)
+  
+  # store all draws for total CI
+  all_victim_draws <- matrix(0, nrow = n_draws, ncol = n_countries)
+  
+  for (i in seq_len(n_countries)) {
+    draws_prev     <- plogis(rnorm(n_draws, dat$logit_prev[i],     dat$se_logit_prev[i]))
+    draws_exposure <- plogis(rnorm(n_draws, dat$logit_exposure[i], dat$se_logit_exposure[i]))
+    draws_overall  <- draws_prev * draws_exposure
+    
+    overall_lower[i] <- quantile(draws_overall, 0.025, na.rm = TRUE)
+    overall_upper[i] <- quantile(draws_overall, 0.975, na.rm = TRUE)
+    
+    # store victim draws for each country
+    all_victim_draws[, i] <- draws_overall * dat$N_12_17[i]
+  }
+  
+  # total CI by summing draws across countries
+  total_draws <- rowSums(all_victim_draws, na.rm = TRUE)
+  
+  country_results <- dat %>%
+    mutate(
+      overall_lower = overall_lower,
+      overall_upper = overall_upper,
+      victims_point = N_12_17 * overall_point,
+      victims_lower = N_12_17 * overall_lower,
+      victims_upper = N_12_17 * overall_upper
+    ) %>%
+    select(
+      country, prev_dh, pi_12_17, N_12_17,
+      overall_point, overall_lower, overall_upper,
+      victims_point, victims_lower, victims_upper
+    )
+  
+  # return both country results and total draws
+  list(
+    country_results = country_results,
+    total_draws     = total_draws
+  )
+}
+
+# run burden estimates
+burden_output <- propagate_burden(
+  prevalence_internet,
+  df_denoms,
+  n_draws = 5000,
+  seed    = 123
+)
+
+# extract country-level results
+burden_ci <- burden_output$country_results
+```
+
+```{r}
+# summary table
+burden_table <- burden_ci %>%
+  transmute(
+    country                     = country,
+    `Prevalence among users`    = fmt_pct(prev_dh, 1),
+    `Internet exposure (12–17)` = fmt_pct(pi_12_17, 1),
+    `Overall prevalence`        = sprintf(
+      "%s (%s–%s)",
+      fmt_pct(overall_point, 1),
+      fmt_pct(overall_lower, 1),
+      fmt_pct(overall_upper, 1)
+    ),
+    `Estimated victims`         = sprintf(
+      "%s (%s–%s)",
+      fmt_int(victims_point),
+      fmt_int(victims_lower),
+      fmt_int(victims_upper)
+    ),
+    `Population 12–17`          = fmt_int(N_12_17)
+  ) %>%
+  arrange(country)
+
+kable(burden_table, format = "html", escape = TRUE)
+```
+
+## Total Estimated Victims Across DH Countries
+
+We sum country-level estimates to produce regional totals with propagated uncertainty intervals.
+```{r total-victims}
+# correct total using summed draws
+total_victims <- list(
+  point = sum(burden_ci$victims_point, na.rm = TRUE),
+  lower = quantile(burden_output$total_draws, 0.025),
+  upper = quantile(burden_output$total_draws, 0.975)
+)
+
+total_CSEA <- sprintf(
+  "%s (%s–%s)",
+  fmt_int(total_victims$point),
+  fmt_int(total_victims$lower),
+  fmt_int(total_victims$upper)
+)
+total_CSEA
+```
+
+
+## Forest Plots: Country-Level Prevalence and Population Burden
+
+We present country-specific estimates of overall prevalence (as percentages) and estimated numbers of affected children with 95% confidence intervals to facilitate cross-country comparison.
+```{r forest-plots, warning=FALSE}
+#| fig-cap: "Country-level prevalence and burden of technology-facilitated CSEA (ages 12–17). Left: estimated overall prevalence among all 12–17-year-olds (% with 95% CIs). Right: estimated number of affected children (95% CIs). For each country, overall prevalence is computed as the product of (a) prevalence among internet-using children (DH child survey) and (b) the proportion of all 12–17-year-olds who use the internet (DH household survey). Counts equal overall prevalence × national 12–17 population (UN WPP 2022, year 2020). Uncertainty is propagated via parametric Monte Carlo on the logit scale (5,000 draws per country); population counts are treated as fixed. Countries are ordered separately within each panel by the point estimate."
+#| fig-width: 14
+#| fig-height: 8
+
+# prevalence data
+prev_data <- burden_ci %>%
+  mutate(
+    prevalence = overall_point * 100,
+    lower      = overall_lower * 100,
+    upper      = overall_upper * 100
+  ) %>%
+  arrange(overall_point) %>%
+  mutate(country = factor(country, levels = country))
+
+# prevalence plot
+p_prev <- ggplot(prev_data, aes(y = country, x = prevalence)) +
+  geom_errorbarh(
+    aes(xmin = lower, xmax = upper),
+    height    = 0.3,
+    linewidth = 0.6,
+    color     = "grey45"
+  ) +
+  geom_point(size = 3, color = "#6f1d1b") +
+  scale_x_continuous(
+    labels = label_percent(scale = 1),
+    expand = expansion(mult = c(0.05, 0.1))
+  ) +
+  labs(
+    title = "Overall prevalence (12–17)",
+    x     = "Prevalence (%, 95% CI)",
+    y     = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title         = element_text(face = "bold", size = 12),
+    axis.text.y        = element_text(size = 10)
+  )
+
+# count data
+count_data <- burden_ci %>%
+  arrange(victims_point) %>%
+  mutate(country = factor(country, levels = country))
+
+# count plot
+p_count <- ggplot(count_data, aes(y = country, x = victims_point)) +
+  geom_errorbarh(
+    aes(xmin = victims_lower, xmax = victims_upper),
+    height    = 0.3,
+    linewidth = 0.6,
+    color     = "grey45"
+  ) +
+  geom_point(size = 3, color = "#283618") +
+  scale_x_continuous(
+    labels = label_number(big.mark = ","),
+    expand = expansion(mult = c(0.05, 0.1))
+  ) +
+  labs(
+    title = "Estimated children affected (12–17)",
+    x     = "Estimated number (95% CI)",
+    y     = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title         = element_text(face = "bold", size = 12),
+    axis.text.y        = element_text(size = 10)
+  )
+
+# combine plots
+combined_forest <- p_prev | p_count
+combined_forest
+
+ggsave(
+  "forest_combined.png",
+  combined_forest,
+  width  = 14,
+  height = 8,
+  dpi    = 600,
+  bg     = "white"
+)
+```
+
+## Scatterplot: Prevalence vs Exposure Relationship
+
+We visualize the relationship between internet exposure and prevalence among internet users, with point size representing population and color indicating overall prevalence. This shows how both components contribute to population-level burden. In high-penetration settings (e.g., Philippines, Malaysia, Thailand), overall prevalence closely tracks prevalence among internet users because most children are online. In lower-penetration settings (e.g., Ethiopia, Uganda, Tanzania), overall prevalence is markedly lower despite comparable user-prevalence, reflecting limited exposure. Countries with large youth populations (e.g., Indonesia, Philippines) show substantial absolute numbers affected even where percentages are moderate, underscoring the value of reporting both relative and absolute burden 
+```{r prevalence-exposure-scatter}
+#| label: itucomp3
+#| fig-width: 11
+#| fig-height: 8
+#| fig-cap: "Relationship between prevalence of technology facilitated CSEA among internet users, internet exposure, and estimated overall prevalence. Scatter plot with point size proportional to population showing prevalence among internet-using 12–17-year-olds who reported one or more forms of technology-facilitated CSEA (x-axis) versus internet-exposure among all 12–17-year-olds (y-axis), across 12 countries. Colour denotes overall prevalence among all children (the product of the x- and y-axis values); bubble size denotes the 12–17 population (millions). Estimates are survey-weighted. Data sources: Disrupting Harm child and household surveys (2020–2021) and UN World Population Prospects 2022 (2020 population estimates).." 
+#| 
+plot_relationship <- function(base_df) {
+  
+  df <- base_df %>%
+    mutate(
+      pIU        = 100 * prev_dh,     # prevalence among users
+      pi         = 100 * pi_12_17,    # exposure
+      pALL       = 100 * prev_ALL,    # overall prevalence (all children)
+      N_millions = N_12_17 / 1e6
+    )
+  
+  ggplot(df, aes(x = pIU, y = pi)) +
+    geom_point(
+      aes(fill = pALL, size = N_millions),
+      shape = 21,
+      color = "white",
+      stroke = 0.6,
+      alpha  = 0.9
+    ) +
+    ggrepel::geom_label_repel(
+      aes(label = country),
+      size              = 3,
+      family            = "sans",
+      box.padding       = 0.6,
+      point.padding     = 0.4,
+      force             = 8,
+      force_pull        = 0.5,
+      max.overlaps      = Inf,
+      seed              = 42,
+      min.segment.length = 0,
+      segment.color     = "grey60",
+      segment.size      = 0.25,
+      label.size        = 0,
+      fill              = scales::alpha("white", 0.9)
+    ) +
+    scale_x_continuous(
+      "Prevalence of technology-facilitated CSEA (%)",
+      limits = c(0, 30),
+      breaks = seq(0, 30, 5),
+      labels = label_percent(scale = 1),
+      expand = expansion(mult = c(0.02, 0.08))
+    ) +
+    scale_y_continuous(
+      "Internet exposure (%)",
+      labels = label_percent(scale = 1),
+      limits = c(0, 100),
+      expand = expansion(mult = c(0.02, 0.05))
+    ) +
+    scale_fill_viridis_c(
+      "Prevalence\namong all children (%)",
+      option  = "plasma",
+      begin   = 0.1,
+      end     = 0.9,
+      limits  = c(0, 30),
+      breaks  = seq(0, 30, 5),
+      labels  = label_percent(scale = 1),
+      oob     = scales::squish,
+      guide   = guide_colorbar(
+        barwidth      = 0.8,
+        barheight     = 6,
+        title.position = "top",
+        title.hjust   = 0.5
+      )
+    ) +
+    scale_size_continuous(
+      "Population\n(millions)",
+      range  = c(2, 10),
+      breaks = c(1, 5, 10, 20, 25),
+      guide  = guide_legend(
+        title.position = "top",
+        title.hjust    = 0.5,
+        override.aes   = list(fill = "grey60", color = "white")
+      )
+    ) +
+    coord_cartesian(
+      clip = "off",
+      xlim = c(0, NA),
+      ylim = c(0, 100)
+    ) +
+    theme_minimal(base_size = 10, base_family = "sans") +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "grey92", linewidth = 0.3),
+    panel.border     = element_rect(fill = NA, color = "grey70", linewidth = 0.4),
+    axis.title       = element_text(size = 9, face = "bold", family = "sans"),
+    axis.text        = element_text(size = 8, family = "sans"),
+    legend.position  = "right",
+    legend.title     = element_text(size = 8, face = "bold", family = "sans"),
+    legend.text      = element_text(size = 7, family = "sans"),
+    plot.margin      = margin(12, 24, 12, 12)
+  ) +
+  labs(caption = "")
+}
+
+scatter_plot <- plot_relationship(base)
+scatter_plot
+
+ggsave(
+  "Extende Data Fig.2.tif",  
+  scatter_plot,
+  width  = 10,
+  height = 7,
+  dpi    = 600,
+  bg     = "white",
+  compression = "lzw"    
+)
+```
+
+## Comparative Exposure Heatmap (DH 12-17 vs ITU 15-24)
+
+We present a side-by-side comparison of internet exposure rates from DH household surveys and ITU estimates, highlighting measurement alignment and potential age-related differences in internet access.
+```{r exposure-heatmap, warning=FALSE}
+#| fig-cap: "Internet exposure comparison: DH household survey vs ITU estimates"
+#| fig-width: 14
+#| fig-height: 7
+
+exposure_heatmap <- function(df_denoms, itu_youth_2020) {
+  
+  # combine data sources
+  exposure_combined <- df_denoms %>%
+    select(
+      country,
+      dh_exposure = pi_12_17
+    ) %>%
+    left_join(
+      itu_youth_2020 %>%
+        select(
+          country,
+          year_itu,
+          itu_exposure = pi_15_24
+        ),
+      by = "country"
+    )
+  
+  # reshape to long format
+  exposure_long <- exposure_combined %>%
+    pivot_longer(
+      cols = c(dh_exposure, itu_exposure),
+      names_to = "source",
+      values_to = "exposure"
+    ) %>%
+    mutate(
+      source = recode(
+        source,
+        dh_exposure  = "DH 12–17",
+        itu_exposure = "ITU 15–24"
+      ),
+      year = if_else(source == "DH 12–17", 2020L, year_itu),
+      label = if_else(
+        is.na(exposure),
+        "—",
+        sprintf(
+          "%s (%d)",
+          scales::percent(exposure, accuracy = 1),
+          year
+        )
+      )
+    )
+  
+  # order countries by DH exposure
+  country_order <- exposure_long %>%
+    filter(source == "DH 12–17") %>%
+    arrange(desc(exposure)) %>%
+    pull(country)
+  
+  exposure_long <- exposure_long %>%
+    mutate(
+      country = factor(country, levels = country_order),
+      text_col = if_else(exposure <= 0.4, "white", "black")
+    )
+  
+  # heatmap
+  p <- ggplot(exposure_long, aes(x = source, y = country, fill = exposure)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    geom_text(
+      aes(label = label, colour = text_col),
+      size = 3,
+      fontface = "bold",
+      show.legend = FALSE
+    ) +
+    scale_fill_viridis_c(
+      option  = "inferno",
+      begin   = 0.15,
+      end     = 0.95,
+      labels  = scales::percent,
+      limits  = c(0, 1),
+      na.value = "grey95",
+      name    = "Internet use"
+    ) +
+    scale_colour_identity() +
+    labs(x = NULL, y = NULL) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text  = element_text(face = "bold"),
+      plot.title = element_text(face = "bold")
+    )
+  
+  p
+}
+
+exposure_heat <- exposure_heatmap(df_denoms, itu_youth_2020)
+exposure_heat
+
+ggsave(
+  "dh_itu.pdf",
+  exposure_heat,
+  width  = 14,
+  height = 9,
+  dpi    = 600
+)
+
+```
+
+## Scatter Plots: DH vs ITU Exposure Estimates
+
+We compare internet exposure estimates from two sources: DH household surveys (children aged 12-17) and ITU estimates (youth aged 15-24). This comparison validates our exposure measures and contextualizes findings within broader regional patterns.
+```{r dh-itu-comparison}
+#| fig-cap: "Technology-facilitated CSEA prevalence vs internet exposure"
+#| fig-width: 14
+#| fig-height: 7
+
+dh_itu_comparison <- function(base_df, itu_youth_2020) {
+  
+  # dh data
+  dh_data <- base_df %>%
+    transmute(
+      country,
+      prevalence   = 100 * prev_dh,
+      exposure_dh  = 100 * pi_12_17,
+      population   = N_12_17
+    ) %>%
+    drop_na(prevalence, exposure_dh)
+  
+  # itu data
+  itu_data <- base_df %>%
+    transmute(
+      country,
+      prevalence = 100 * prev_dh,
+      population = N_12_17
+    ) %>%
+    left_join(
+      itu_youth_2020 %>%
+        select(country, exposure_itu = pi_15_24, year_itu),
+      by = "country"
+    ) %>%
+    mutate(exposure_itu = 100 * exposure_itu)
+  
+  scatter_theme <- theme_minimal(base_size = 10) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "grey92", linewidth = 0.3),
+      panel.border     = element_rect(fill = NA, color = "grey70", linewidth = 0.4),
+      axis.title       = element_text(size = 9, face = "bold"),
+      axis.text        = element_text(size = 8),
+      plot.tag         = element_text(size = 12, face = "bold"),
+      plot.margin      = margin(8, 8, 8, 8)
+    )
+  
+  pop_breaks <- pretty(range(dh_data$population, na.rm = TRUE), n = 4)
+  x_max <- max(c(dh_data$prevalence, itu_data$prevalence), na.rm = TRUE) * 1.15
+  
+  # panel a: dh household exposure
+  p_dh <- ggplot(dh_data, aes(x = prevalence, y = exposure_dh,
+                              size = population, fill = population)) +
+    geom_point(shape = 21, color = "white", stroke = 0.5, alpha = 0.9) +
+    ggrepel::geom_text_repel(
+      aes(label = country),
+      size         = 2.5,
+      box.padding  = 0.35,
+      segment.color = "grey60",
+      max.overlaps = Inf,
+      seed         = 42
+    ) +
+    scale_x_continuous(
+      "Prevalence among internet-using children (%)",
+      labels = label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = expansion(mult = c(0.02, 0.1))
+    ) +
+    scale_y_continuous(
+      "Internet exposure, 12–17 (%)\n(DH household, 2020)",
+      labels = label_percent(scale = 1),
+      limits = c(0, 100)
+    ) +
+    scale_fill_viridis_c(
+      "Population\n12–17 (millions)",
+      option = "inferno",
+      begin  = 0.1,
+      end    = 0.90,
+      breaks = pop_breaks,
+      labels = label_number(scale = 1e-6, suffix = "M"),
+      guide  = guide_colorbar(barwidth = 1, barheight = 8, title.position = "top")
+    ) +
+    scale_size_area(max_size = 10, breaks = pop_breaks, guide = "none") +
+    scatter_theme +
+    labs(tag = "a")
+  
+  # panel b: itu youth exposure
+  p_itu <- ggplot(itu_data, aes(x = prevalence, y = exposure_itu,
+                                size = population, fill = population)) +
+    geom_point(shape = 21, color = "white", stroke = 0.5, alpha = 0.9, na.rm = TRUE) +
+    ggrepel::geom_text_repel(
+      aes(label = country),
+      size         = 2.5,
+      box.padding  = 0.35,
+      segment.color = "grey60",
+      max.overlaps = Inf,
+      seed         = 42,
+      na.rm        = TRUE
+    ) +
+    scale_x_continuous(
+      "Prevalence among internet-using children (%)",
+      labels = label_percent(scale = 1),
+      limits = c(0, x_max),
+      expand = expansion(mult = c(0.02, 0.1))
+    ) +
+    scale_y_continuous(
+      "Youth internet use, 15–24 (%)\n(ITU, various years)",
+      labels = label_percent(scale = 1),
+      limits = c(0, 100)
+    ) +
+    scale_fill_viridis_c(
+      "Population\n12–17 (millions)",
+      option = "inferno",
+      begin  = 0.1,
+      end    = 0.90,
+      breaks = pop_breaks,
+      labels = label_number(scale = 1e-6, suffix = "M"),
+      guide  = guide_colorbar(barwidth = 1, barheight = 8, title.position = "top")
+    ) +
+    scale_size_area(max_size = 10, breaks = pop_breaks, guide = "none") +
+    scatter_theme +
+    labs(tag = "b")
+  
+  # combine panels
+  p_dh + p_itu +
+    plot_layout(guides = "collect") &
+    theme(
+      legend.position = "right",
+      legend.title    = element_text(size = 9, face = "bold"),
+      legend.text     = element_text(size = 8)
+    )
+}
+
+comparison <- dh_itu_comparison(base, itu_youth_2020)
+comparison
+
+ggsave(
+  "dh_itu_comparison.png",
+  comparison,
+  width  = 14,
+  height = 7,
+  dpi    = 600,
+  bg     = "white"
+)
+```
+
+## Three Panel Comparisons of Prevelance and Internet Exposure
+
+We create a three-panel figure decomposing overall prevalence into its components: technology-facilitated CSEA prevalence among internet users, internet exposure rates by country, and the resulting overall population prevalence. Here we calculated the proportion of all children aged 12-17 experiencing technology-facilitated CSEA by multiplying each country's internet penetration rate (from DH household surveys) by the prevalence among internet users.
+```{r}
+#| label: itucomp2
+#| fig-width: 11
+#| fig-height: 8
+#| fig-cap: >
+#|  Technology-facilitated CSEA, exposure, and overall population prevalence (ages 12–17). Panel (a) shows the prevalence of technology-facilitated CSEA among internet-using 12–17-year-olds (DH child survey; survey-weighted). Panel (b) shows internet exposure from the DH household survey: the percentage of all 12–17-year-olds who use the internet. Panel (c) shows the overall prevalence among all 12–17-year-olds, conceptually computed as Panel (a) × Panel (b) for each country and year. Countries are ordered by the overall estimate in Panel (c); dashed vertical lines mark medians. (DH = Disrupting Harms.)
+
+plot_three_panel <- function(base_df) {
+  # overall prevalence column
+  if (!"prev_ALL" %in% names(base_df)) {
+    stop("need prev_ALL in base_df")
+  }
+  
+  df <- base_df
+  
+  # add percentage-scale variables
+  df$pIU  <- 100 * df$prev_dh          # prevalence among users
+  df$pi   <- 100 * df$pi_12_17         # exposure
+  df$pALL <- 100 * df$prev_ALL         # overall prevalence
+  
+  # order by overall prevalence (descending) 
+  ord <- order(df$pALL, decreasing = TRUE, na.last = NA)
+  df  <- df[ord, , drop = FALSE]
+  df$country <- factor(df$country, levels = df$country)
+  
+  cols <- c("#084081", "#2B8CBE", "#A6BDDB")
+  
+  # clean theme
+  theme_clean <- function() {
+    theme_minimal(base_size = 11) +
+      theme(
+        panel.grid.minor      = element_blank(),
+        plot.title            = element_text(face = "bold", size = 10, margin = margin(b = 2)),
+        axis.title.x          = element_text(size = 9, margin = margin(t = 2)),
+        axis.text.x           = element_text(size = 8, margin = margin(t = 1)),
+        axis.text.y           = element_text(size = 8, margin = margin(r = 1)),
+        axis.title.y          = element_blank(),
+        plot.caption.position = "plot",
+        plot.margin           = margin(2, 2, 2, 2)
+      )
+  }
+  
+  # panel constructor
+  make_panel <- function(xvar, col, title, xlabel) {
+    ggplot(df, aes(x = get(xvar), y = country)) +
+      geom_segment(
+        aes(x = 0, xend = get(xvar), yend = country),
+        linewidth = 0.55,
+        color     = col,
+        alpha     = 0.8
+      ) +
+      geom_point(size = 2.6, color = col) +
+      geom_vline(
+        xintercept = stats::median(df[[xvar]], na.rm = TRUE),
+        linetype   = 3,
+        linewidth  = 0.35,
+        color      = "grey50",
+        alpha      = 0.8
+      ) +
+      scale_x_continuous(
+        labels = scales::label_percent(scale = 1),
+        limits = c(0, 100),
+        expand = expansion(mult = c(0, 0))
+      ) +
+      labs(title = title, x = xlabel, y = NULL) +
+      theme_clean() +
+      theme(panel.spacing.x = unit(2, "pt"))
+  }
+  
+  # three panels
+  p1 <- make_panel("pIU",  cols[1], "Technology-facilitated CSEA (internet-using)", "Prevalence (%)")
+  p2 <- make_panel("pi",   cols[2], "Internet exposure", "Share online (%)")
+  p3 <- make_panel("pALL", cols[3], "Technology-facilitated CSEA (all children)", "Overall (%)")
+  
+  # x-axis titles only on bottom panel
+  p1 <- p1 + theme(axis.title.x = element_blank())
+  p2 <- p2 + theme(
+    axis.title.x = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+  p3 <- p3 + theme(
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+  
+  # patchwork
+  figure <- (p1 | p2 | p3) +
+    patchwork::plot_layout(widths = c(1, 1, 1), guides = "collect") +
+    patchwork::plot_annotation(
+      theme = theme(
+        plot.caption = ggtext::element_markdown(
+          hjust  = 0,
+          size   = 8.5,
+          margin = margin(t = 2, r = 4, b = 2, l = 4)
+        ),
+        plot.margin = margin(2, 2, 2, 2)
+      )
+    )
+  
+  figure & theme(plot.margin = margin(1, 1, 1, 1))
+}
+
+three_panel <- plot_three_panel(base)
+three_panel
+
+
+ggsave(
+  "dh_three_panel.png",
+  three_panel,
+  width = 12,
+  height = 8,
+  dpi = 600,
+  bg = "white"
+)
+```
+## Gender-Disaggregated ITU Data and Heatmap
+
+We visualise internet use rates by gender across study countries using ITU data, highlighting data availability and gaps in gender-disaggregated estimates.
+```{r itu-gender-heatmap, warning=FALSE}
+#| fig-cap: "Availability of gender-disaggregated internet-use data in study countries. Heatmap showing youth (15–24 years) internet use from ITU statistics, used as the closest available proxy to our target group (12–17 years). For each country and sex, cells show the percentage using the internet and the reference year (latest available, or nearest to 2020 if specified), with colours mapping 0–100%. Only nine of the twelve study countries have gender-disaggregated ITU data and are shown here, ordered by data availability."
+#| fig-width: 6
+#| fig-height: 5
+
+# load itu gender data
+itu_gender_raw <- read_csv(itu_pathg, show_col_types = FALSE) %>%
+  clean_names()
+
+# reshape to long format
+year_cols <- grep("^x\\d{4}$", names(itu_gender_raw), value = TRUE)
+
+itu_gender_long <- itu_gender_raw %>%
+  transmute(
+    country = harmonize_country(economy),
+    sex     = str_squish(disaggregation),
+    across(all_of(year_cols), ~ parse_number(.x) / 100)
+  ) %>%
+  filter(sex %in% c("Male", "Female")) %>%
+  pivot_longer(
+    cols      = all_of(year_cols),
+    names_to  = "year",
+    values_to = "internet_use"
+  ) %>%
+  mutate(
+    year = as.integer(sub("^x", "", year))
+  ) %>%
+  arrange(country, sex, year)
+
+# select most recent available year
+itu_gender_final <- itu_gender_long %>%
+  drop_na(internet_use) %>%
+  group_by(country, sex) %>%
+  slice_max(year, n = 1) %>%
+  ungroup() %>%
+  select(country, sex, internet_use, year_itu = year)
+
+head(itu_gender_final) 
+
+# filter study countries
+study_countries <- c(
+  "Ethiopia",
+  "Kenya",
+  "Mozambique",
+  "Namibia",
+  "Tanzania",
+  "Uganda",
+  "Cambodia",
+  "Indonesia",
+  "Malaysia",
+  "Philippines",
+  "Thailand",
+  "Vietnam"
+)
+
+itu_study <- itu_gender_final %>%
+  filter(country %in% study_countries)
+
+# order countries by data availability
+country_order <- itu_study %>%
+  group_by(country) %>%
+  summarise(
+    n_available = n(),
+    male_use    = internet_use[sex == "Male"][1],
+    .groups     = "drop"
+  ) %>%
+  arrange(desc(n_available), desc(male_use)) %>%
+  pull(country)
+```
+
+```{r, warning=FALSE}
+# plotting data
+itugender_data <- itu_study %>%
+  mutate(
+    country = factor(country, levels = country_order),
+    sex = factor(sex, levels = c("Male", "Female")),
+    label = sprintf("%.1f%%\n(%d)", internet_use * 100, year_itu)
+  )
+
+itugender_data$text_col <- ifelse(itugender_data$internet_use >= 0.6,  "black", "white")
+
+ggplot(itugender_data, aes(x = sex, y = country, fill = internet_use)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(
+    aes(label = label, colour = text_col),
+    size = 2.8,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  scale_fill_viridis_c(
+    option = "inferno",
+    begin = 0.15,
+    end = 0.95,
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 1),
+    name = "Internet use"
+  ) +
+  scale_colour_identity() +  
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(face = "bold"),
+    axis.text.y = element_text(size = 8, face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+
+# save heatmap
+ggsave(
+  "itu_gender_heatmap.pdf", 
+  width = 6, 
+  height = 5, 
+  dpi = 600
+  )
+```
