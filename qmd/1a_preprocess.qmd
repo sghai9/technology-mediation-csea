@@ -48,6 +48,7 @@ knitr::opts_chunk$set(
 
 # Libraries
 ```{r, message=FALSE}
+#| cache: false
 # Load packages 
 library(here)
 library(gtsummary)
@@ -84,13 +85,13 @@ library(emmeans)
 This data is a nationally representative household survey collected by UNICEF with ~1,000 children and ~1,000 of their parents and caregivers across 12 countries in Eastern and Southern Africa (incl. Ethiopia and Mozambique) and Southeast Asia (incl. Cambodia and Vietnam). The study was conducted by UNICEF Office of Research, ECPAT International, and INTERPOL and Ipsos Mori collected data using a combination of face-to-face household interviews and online interviews. The Disrupting Harm dataset includes dichotomous and free-response variables that measure both child and parent outcomes. We will look at only child-level data to understand the extent of reporting technology-facilitated child sexual exploitation and abuse (CSEA) by children. Data was obtained under a data-sharing agreement and is not publicly available due to confidentiality and senstive nature of the dataset. 
 ```{r raw load, echo = FALSE}
 raw_df <- read.csv("data-raw/DH_12Countries_110222.csv")
-
 ```
 
 # Data Preprocessing
 
 We select relevant variables following our pre-registeration: In order to ensure we don't miss out on any nested questions/sub-questions, we include all variables that include technology-facilitated CSEA related questions plus our set of independent variables: macro (gender norms/cultural), meso (interpersonal/family), micro (individual) and protective factors). We also select additional variables of interest: platforms, place etc to perform further descriptive analysis. 
 ```{r subset data_1}
+#| cache: false
 subset_dh <- raw_df %>%
   select(
     # Participant ID
@@ -177,17 +178,13 @@ print(paste0("Number of Observations: ", nrow(subset_dh)))
 
 ## Duplicates
 
-We now examine whether there are duplicate IDs. Upon inspection, 24 ID numbers are duplicates. However, ECS_AddressID, start date and remaining column responses don't seem identical. It appears that the same respondent_ID was used to mark two respondents but these responses appear to be unique (that we confirmed). 
+We now examine whether there are duplicate IDs. 
 ```{r duplicates,  results="hide"}
 # 1. Examine duplicate IDs
 duplicate_ids <- subset_dh %>%
   filter(duplicated(Respondent_ID) | duplicated(Respondent_ID, fromLast = TRUE))
 
-# 2. Inspect duplicates
-inspect_dup <- subset_dh %>%
-  filter(Respondent_ID == "725305")
-
-# 3. Select all duplicate ID
+# 2.  Select all duplicate ID
 duplicates_df <- subset_dh %>%
   filter(Respondent_ID %in% duplicate_ids$Respondent_ID) %>%
   group_by(Respondent_ID)
@@ -446,6 +443,7 @@ df_wgt <- df_wgt %>%
   )
 ```
 
+
 ### Location of Technology-Facilitated CSEA Variables
 To determine whether technology-facilitated CSEA occurred online, offline, children were asked: “Thinking about the last time this happened, did it happen in any of these ways?” This was a multi-response question, allowing children to select all applicable options. The response items included: in-person, on social media platforms (e.g., Facebook, YouTube, Snapchat, WhatsApp, Twitter), in an online game, or some other way for each type of CSEA.
 ```{r renaming online}
@@ -481,18 +479,24 @@ df_wgt <- df_wgt %>%
 ### Online Platforms Involved in Technology-Facilitated CSEA Variables
 Although most questions in the Disrupting Harm (DH) survey were platform-agnostic, adolescents who reported experiencing technology-facilitated child sexual exploitation and abuse (CSEA) on social media were asked a follow-up question to identify the specific platforms involved: “On which platform(s) or website(s) did this happen?” This question was only presented to participants who had previously indicated that the incident occurred via social media. Respondents could select from a predefined list of 17 platforms, including widely used services such as Facebook or Facebook Messenger (1), Twitter (2), Snapchat (3), Instagram (4), TikTok (5), WhatsApp (6), Line (7), YouTube (8), Tumblr (9), Flickr (10), Live.me (11), Periscope (12), Twitch (13), Discord (14), as well as broader response options: Other (15), Don’t know (16), and Prefer not to say (17).Each selected platform was recorded using platform-specific variable codes that corresponded to distinct types of CSEA experiences. For example, variables were labeled as platform_a.1, platform_b.4, etc., where the letter denotes the CSEA category and the number corresponds to the selected platform. Non-substantive responses such as "Other," "Don’t know," and "Prefer not to say" were also recorded using specific codes (e.g., platform_a.888, platform_a.999, platform_a.other).
 ```{r renaming platforms}  
+#| cache: false
 # And on which platform(s) or website(s) did this happen?
 df_wgt <- df_wgt %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G1a", "platform_a.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G1c", "platform_b.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G3b", "platform_c.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G3c", "platform_d.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G3d", "platform_e.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4a", "platform_f.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4b", "platform_g.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4c", "platform_h.\\1")) %>%
-  rename_with(~ str_replace_all(.x, "G8_1_([0-9]+)_G4d", "platform_i.\\1"))
+  rename_with(
+    ~ .x %>%
+      str_replace_all("G8_1_([0-9]+)_G1a", "platform_a.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_G1c", "platform_b.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gb",  "platform_c.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gd",  "platform_d.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Ge",  "platform_e.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gf",  "platform_f.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gg",  "platform_g.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gh",  "platform_h.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gi",  "platform_i.\\1"),
+    starts_with("G8_1_")
+  )
 ```
+
 
 ### Recoding Other Variables of Interest 
 ```{r recode}
@@ -644,6 +648,7 @@ alpha_pm
   
 ## Subset Variables of Interest  
 ```{r subset data}
+#| cache: false
 ocsea_df <- df_wgt %>%
   select(
     contains("CBU_ID"),
@@ -2331,7 +2336,7 @@ perp_df
 
 ## Online Platforms Involved in Technology-Facilitated CSEA Incidents
 ```{r pivot platforms}
-
+#| cache: false
 # prepare platform data 
 allplatforms <- ocsea_df %>%
   select(wgt_scaled, starts_with("platform_")) %>%
@@ -2354,7 +2359,6 @@ allplatforms <- ocsea_df %>%
   # apply weights 
   group_by(type, platform) %>%
   summarise(Proportion = sum(value * wgt_scaled, na.rm = TRUE) / sum(wgt_scaled[!is.na(value)]),
-             N_unweighted = sum(value == 1, na.rm = TRUE),   
             .groups = "drop") %>%
   arrange(-Proportion) %>%
   mutate(
@@ -2391,7 +2395,6 @@ allplatforms <- ocsea_df %>%
       `17` = "Prefer not to say"
     )
   )
-
 ```
 
 ```{r pivot platforms2}

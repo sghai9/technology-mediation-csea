@@ -132,7 +132,7 @@ M <- 30
 
 ```{r, echo=FALSE}
 #| label: load-data-victim
-d_victim <- readRDS("/data-raw/victim_dh.rds")
+d_victim <- readRDS("data-raw/victim_dh.rds")
 ```
 
 ```{r, echo=FALSE}
@@ -258,8 +258,8 @@ facet_labels <- c(
   "sexed1" = "Sex education",
   "b_helpseeking1" = "Help-seeking",
   "helpseeking1" = "Help-seeking",
-  "b_digitalskills" = "Digital skills",
-  "digitalskills" = "Digital skills"
+  "b_digitalskills" = "Digital skills to report",
+  "digitalskills" = "Digital skills to report"
 )
 
  
@@ -1173,12 +1173,12 @@ halfeye_plot <- ggplot(draws_df, aes(
     fill = "Disclosure Channel",
     color = "Disclosure Channel"
   ) +
- theme_minimal(base_size = 14, base_family = "sans") +
+ theme_minimal(base_size = 10, base_family = "sans") +
   theme(
-    axis.text.y  = element_text(family = "sans", size = 20, face = "bold"),
-    axis.text.x  = element_text(family = "sans", size = 13),
-    legend.title = element_text(family = "sans", size = 18, face = "bold"),
-    legend.text  = element_text(family = "sans", size = 13),
+    axis.text.y  = element_text(family = "sans", size = 8, face = "bold"),
+    axis.text.x  = element_text(family = "sans", size = 6),
+    legend.title = element_text(family = "sans", size = 8, face = "bold"),
+    legend.text  = element_text(family = "sans", size = 5),
     legend.position = "bottom",
     panel.grid   = element_blank(),
     plot.margin  = margin(10, 10, 10, 10)
@@ -1677,6 +1677,7 @@ fit_urban2 <- brm(
 
 The following visualises the worst-case $\hat{R}$ values across each of the $M$ multiply imputed datasets, grouping chains by imputation.
 ```{r}
+#| cache: false
 #' Find worst Rhat for each parameter among M sets of K chains
 #' This is useful for a brm_multiple model fitted to MICE data as it calculates
 #' Rhat separately for each MI dataset.
@@ -1686,29 +1687,21 @@ The following visualises the worst-case $\hat{R}$ values across each of the $M$ 
 
 
 rhat_worst_hist <- function(model, m, k) {
-  as_draws_df(model, variable = c("b_", "sd_", "cor_"), regex = TRUE) %>% 
-    
-    # index datasets (i.e., sets of chains belonging to the same imputed data)
+  rhats <- as_draws_df(model, variable = c("b_", "sd_", "cor_"), regex = TRUE) %>% 
     mutate(chainset = ((.chain) - 1) %/% k) %>% 
-    
-    # calculate Rhat for each variable and chainset
     group_by(chainset) %>%
     group_modify(~ summarise_draws(.x, rhat)) %>% 
     ungroup() %>% 
-    filter(rhat == max(abs(rhat)), .by = variable) %>% 
-    ggplot(aes(rhat)) +
-    geom_histogram(binwidth = 0.01, fill = "gray", color = "black") +
-    scale_x_continuous(
-      labels = ~ number(.x, accuracy = 0.001)
-    ) +
-    scale_y_continuous(
-      expand = expansion(c(0, 0.1))
-    ) +
+    filter(rhat == max(abs(rhat)), .by = variable) %>%
+    pull(rhat)
+  
+  bayesplot::mcmc_rhat_hist(rhats) +
+    scale_x_continuous(labels = ~ number(.x, accuracy = 0.001)) +
     labs(x = "Rhat", y = "Frequency") +
     theme_minimal() +
     theme(
       axis.title = element_text(size = 10),
-      axis.text = element_text(size = 8)
+      axis.text  = element_text(size = 8)
     )
 }
 ```
@@ -1750,6 +1743,7 @@ predictor_names <- c(
 ```
 
 ```{r}
+#| cache: false
 checks <- function(model, m = M, k = 4, predictor_labels = predictor_names) {
   
   # labeller for facet strips
@@ -1909,6 +1903,7 @@ summary_table %>%
 \newpage
 ```{r}
 #| label: fig-ppcheck-vic
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics of the demographic model for technology-facilitated CSEA disclosure, including trace plots, R̂ histogram, and posterior predictive check."
@@ -1917,6 +1912,7 @@ checks(fit_victim)
 
 ```{r}
 #| label: fig-ppcheck-urban
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics of the urbanisation model for technology-facilitated CSEA disclosure, including trace plots, R̂ histogram, and posterior predictive check."
@@ -1925,6 +1921,7 @@ checks(fit_urban2)
 
 ```{r}
 #| label: fig-ppcheck-report-1
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 10
 #| fig-cap: "Graphical diagnostics for the disclosure model with random intercepts and missingness model, including posterior predictive density."
@@ -1933,6 +1930,7 @@ checks(fit_report_all)
 \newpage
 ```{r}
 #| label: fig-ppcheck-int-mice-4
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 10
 #| fig-cap: "Graphical diagnostics for the disclosure model with random slopes and an age-by-sex interaction, including posterior predictive density."
@@ -1942,6 +1940,7 @@ checks(fit_report_all_mice_random_interaction, m = M, k = 4)
 \newpage
 ```{r}
 #| label: fig-ppcheck-report-eff
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the disclosure model with random effects only, including posterior predictive density."
@@ -1950,6 +1949,7 @@ checks(fit_report_all_mice, m = M, k = 4)
 
 ```{r}
 #| label: fig-ppcheck-report-eff2
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the formal disclosure model with random effects only, including posterior predictive density."
@@ -1959,6 +1959,7 @@ checks(fit_report_formal_mice, m = M, k = 4)
 \newpage
 ```{r}
 #| label: fig-ppcheck-report-eff3
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the informal disclosure model with random effects only, including posterior predictive density."
@@ -1968,6 +1969,7 @@ checks(fit_report_informal_mice, m = M, k = 4)
 \newpage
 ```{r}
 #| label: fig-ppcheck-report-mice-1
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the disclosure model with random slopes, including posterior predictive density."
@@ -1976,6 +1978,7 @@ checks(fit_report_all_mice_random, m = M, k = 4)
 \newpage
 ```{r}
 #| label: fig-ppcheck-formal-mice-2
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the formal disclosure model with random slopes, including posterior predictive density."
@@ -1984,6 +1987,7 @@ checks(fit_report_formal_mice_random, m = M, k = 4)
 \newpage
 ```{r}
 #| label: fig-ppcheck-informal-mice-3
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the informal disclosure model with random slopes, including posterior predictive density."
@@ -1992,6 +1996,7 @@ checks(fit_report_informal_mice_random, m = M, k = 4)
 
 ```{r}
 #| label: fig-ppcheck-horshoe
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the horseshoe model with random slopes, including posterior predictive density."
@@ -2001,6 +2006,7 @@ checks(fit_report_mice_horseshoe, m = M, k = 4)
 
 ```{r}
 #| label: fig-ppcheck-horshoeslope
+#| cache: false
 #| fig-height: 8.4
 #| fig-width: 12
 #| fig-cap: "Graphical diagnostics for the horseshoe model with random slopes, including posterior predictive density."
