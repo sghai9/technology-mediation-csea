@@ -1121,7 +1121,7 @@ intervals <- draws_df %>%
     .lower = quantile(value, 0.025),
     .upper = quantile(value, 0.975),
     significant = (.lower > 0 | .upper < 0),
-    credible_intervals = ifelse(significant, "95% CI excludes 0", "Includes 0"),
+    credible_intervals = ifelse(significant, "95% CrI excludes 0", "95% CrI Includes 0"),
     .groups = "drop"
   )
 
@@ -1153,7 +1153,7 @@ halfeye_plot <- ggplot(draws_df, aes(
   position = position_dodge(width = 0.6)
   ) +
  scale_shape_manual(
-  values = c("95% CI excludes 0" = 17, "Includes 0" = 16),
+  values = c("95% CrI excludes 0" = 17, "95% CrI Includes 0" = 16),
   name = ""
   ) +
   geom_vline(xintercept = 0, linetype = "dotted", color = "grey60") +
@@ -1184,6 +1184,7 @@ halfeye_plot <- ggplot(draws_df, aes(
     plot.margin  = margin(10, 10, 10, 10)
   )
 halfeye_plot
+
 ggsave(
   "Figure4.pdf",
   halfeye_plot,
@@ -1285,29 +1286,32 @@ countrycoefs <- ggplot(plot_coef, aes(x = Estimate, y = country)) +
     aes(color = region),
     size = 3.2, shape = 16
   ) +
-
   scale_color_manual(
     values = c("Africa" = "#3B0F70", "Asia" = "#E69F00"),
     name   = NULL
   ) +
   guides(color = guide_legend(override.aes = list(linewidth = 1.5, size = 3))) +
   facet_wrap(~ parameter, scales = "free_x", nrow = 2) +
+  scale_y_discrete(expand = expansion(add = c(0.5, 0.5))) +
   labs(x = "Estimate (log-odds)", y = NULL) +
   theme_minimal(base_size = 10, base_family = "sans") +
   theme(
-    strip.background = element_rect(fill = "black", color = NA),
-    strip.text = element_text(color = "white", face = "bold", 
-                           size = 6, family = "sans",
-                           margin = margin(t = 3, b = 3)),
+    strip.background = element_blank(),
+    strip.text = element_text(color = "black", face = "bold", 
+                              size = 7, family = "sans",
+                              margin = margin(t = 3, b = 3)),
     panel.background = element_rect(fill = "white", colour = NA),
     plot.background  = element_rect(fill = "white", colour = NA),
-    panel.border     = element_rect(color = "grey30", fill = NA, linewidth = 0.3),
+    panel.border     = element_blank(),  
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    axis.text.y      = element_text(size = 9, face = "bold", family = "sans"),
-    axis.text.x      = element_text(size = 8, family = "sans"),
-    axis.title.x     = element_text(size = 10, face = "bold", family = "sans",
-                                    margin = margin(t = 8)),
+    axis.text.y  = element_text(size = 9, face = "bold", family = "sans"),
+    axis.text.x  = element_text(size = 8, family = "sans"),
+    axis.title.x = element_text(size = 10, face = "bold", family = "sans",
+                                margin = margin(t = 8)),
+    axis.line    = element_line(color = "black", linewidth = 0.4),
+    axis.ticks   = element_line(color = "black", linewidth = 0.4),
+    axis.ticks.length = unit(3, "pt"),
     legend.position  = "bottom",
     legend.text      = element_text(size = 9, family = "sans"),
     legend.key.width = unit(1, "cm"),
@@ -1319,7 +1323,7 @@ countrycoefs
 ggsave(
   "Figure5.pdf",
   countrycoefs,
-  width  = 18,
+  width  = 20,
   height = 17,
   dpi    = 300,
   units  = "cm"
@@ -1347,10 +1351,8 @@ plot_formalinformal <- combined_coefs %>%
   )
 
 # plot 
-
 formalinformal_plot <- ggplot(plot_formalinformal, aes(x = Estimate, y = y)) +
   geom_vline(xintercept = 0, linetype = "solid", linewidth = 0.3, color = "grey30") +
-
   # Non-credible (grey)
   geom_linerange(
     data = ~ subset(.x, !sig),
@@ -1362,7 +1364,6 @@ formalinformal_plot <- ggplot(plot_formalinformal, aes(x = Estimate, y = y)) +
     aes(shape = report),
     size = 2.2, color = "grey60", stroke = 0.3, show.legend = FALSE
   ) +
-
   # credible (colored)
   geom_linerange(
     data = ~ subset(.x, sig),
@@ -1380,9 +1381,9 @@ formalinformal_plot <- ggplot(plot_formalinformal, aes(x = Estimate, y = y)) +
   facet_wrap(~ parameter, scales = "free_x", nrow = 2) +
   labs(x = "Estimate (log-odds)", y = NULL) +
   scale_y_continuous(
-    breaks = seq_along(rev(countries)),
-    labels = rev(countries),
-    expand = expansion(mult = c(0.02, 0.02))
+  breaks = seq_along(rev(countries)),
+  labels = rev(countries),
+  expand = expansion(mult = c(0.02, 0.02))
   ) +
   theme_minimal(base_size = 10, base_family = "sans") +
   theme(
@@ -1391,11 +1392,15 @@ formalinformal_plot <- ggplot(plot_formalinformal, aes(x = Estimate, y = y)) +
     panel.border     = element_blank(),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    strip.background = element_rect(fill = "black", color = NA),
+    strip.background = element_blank(),
+    strip.text       = element_text(color = "black", face = "bold",
+                                    size = 10, family = "sans",
+                                    margin = margin(t = 3, b = 3)),
     axis.text.y      = element_text(size = 8, face = "bold", family = "sans"),
     axis.text.x      = element_text(size = 8, family = "sans"),
-    strip.text       = element_text(color = "white", face = "bold",
-                                    size = 10, family = "sans"),
+    axis.line        = element_line(color = "black", linewidth = 0.4),
+    axis.ticks       = element_line(color = "black", linewidth = 0.4),
+    axis.ticks.length = unit(3, "pt"),
     legend.position  = "bottom",
     legend.key       = element_blank(),
     legend.key.width = unit(1, "cm"),
@@ -1408,7 +1413,7 @@ ggsave(
   "Extended Data Fig.3.tif", 
   formalinformal_plot,
   width = 12,
-  height = 20,
+  height = 17,
   dpi = 600,
   compression = "lzw"  
 )
@@ -1452,10 +1457,11 @@ credible_coefs <- combined_coefs2 %>%
 
 Now we print a table of credible associations
 ```{r}
-# Country-specific posterior coefficients
+# Country-specific posterior coefficients 
+# PD computed under a normal approximation to the posterior
 combined_coefs <- combined_coefs %>%
   mutate(
-    prob_positive     = if_else(
+    PD_value     = if_else(
       Estimate > 0, 
       pnorm(Estimate / Est.Error), 
       1 - pnorm(Estimate / Est.Error)
@@ -1466,7 +1472,7 @@ combined_coefs <- combined_coefs %>%
 coef_supplementary <- combined_coefs %>%
   mutate(
     across(c(Estimate, `Q2.5`, `Q97.5`), ~ round(.x, 3)),
-    `Pr(>0)` = scales::percent(prob_positive, accuracy = 0.1)
+    `PD` = scales::percent(PD_value, accuracy = 0.1)
   ) %>%
   select(
     Country       = country,
@@ -1475,7 +1481,7 @@ coef_supplementary <- combined_coefs %>%
     Estimate,
     `Q2.5`,
     `Q97.5`,
-    `Pr(>0)`,
+    `PD`,
     `Excludes 0?` = credible_interval
   ) %>%
   arrange(Country, Model, Parameter)
@@ -1491,8 +1497,6 @@ coef_supplementary  %>%
     font_size = 8
   ) %>%
   collapse_rows(columns = 1:2, valign = "top")
-
-
 ```
 
 ```{r}
@@ -1604,7 +1608,7 @@ comparison <- ggplot(comparisons, aes(mean, label, color = model, alpha = signif
   ) +
   scale_x_continuous("Estimate", breaks = extended_breaks(n = 7)) +
   scale_alpha_manual(
-    name = "95% CI excludes 0",
+    name = "95% CrI excludes 0",
     values = c("TRUE" = 1, "FALSE" = 0.2)
   ) +
   scale_color_brewer(name = "Model", palette = "Dark2") +

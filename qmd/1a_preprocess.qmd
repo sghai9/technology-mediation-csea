@@ -41,16 +41,14 @@ In this script, we subset data from the Disrupting Harm main data set and perfor
 #| include: false
 
 knitr::opts_chunk$set(
-  cache = TRUE,
-  echo = TRUE
+  cache = FALSE,
+  echo  = TRUE
 )
 ```
 
 # Libraries
 ```{r, message=FALSE}
-#| cache: false
 # Load packages 
-library(here)
 library(gtsummary)
 library(dplyr)
 library(tidyverse)
@@ -91,7 +89,6 @@ raw_df <- read.csv("data-raw/DH_12Countries_110222.csv")
 
 We select relevant variables following our pre-registeration: In order to ensure we don't miss out on any nested questions/sub-questions, we include all variables that include technology-facilitated CSEA related questions plus our set of independent variables: macro (gender norms/cultural), meso (interpersonal/family), micro (individual) and protective factors). We also select additional variables of interest: platforms, place etc to perform further descriptive analysis. 
 ```{r subset data_1}
-#| cache: false
 subset_dh <- raw_df %>%
   select(
     # Participant ID
@@ -479,20 +476,19 @@ df_wgt <- df_wgt %>%
 ### Online Platforms Involved in Technology-Facilitated CSEA Variables
 Although most questions in the Disrupting Harm (DH) survey were platform-agnostic, adolescents who reported experiencing technology-facilitated child sexual exploitation and abuse (CSEA) on social media were asked a follow-up question to identify the specific platforms involved: “On which platform(s) or website(s) did this happen?” This question was only presented to participants who had previously indicated that the incident occurred via social media. Respondents could select from a predefined list of 17 platforms, including widely used services such as Facebook or Facebook Messenger (1), Twitter (2), Snapchat (3), Instagram (4), TikTok (5), WhatsApp (6), Line (7), YouTube (8), Tumblr (9), Flickr (10), Live.me (11), Periscope (12), Twitch (13), Discord (14), as well as broader response options: Other (15), Don’t know (16), and Prefer not to say (17).Each selected platform was recorded using platform-specific variable codes that corresponded to distinct types of CSEA experiences. For example, variables were labeled as platform_a.1, platform_b.4, etc., where the letter denotes the CSEA category and the number corresponds to the selected platform. Non-substantive responses such as "Other," "Don’t know," and "Prefer not to say" were also recorded using specific codes (e.g., platform_a.888, platform_a.999, platform_a.other).
 ```{r renaming platforms}  
-#| cache: false
 # And on which platform(s) or website(s) did this happen?
 df_wgt <- df_wgt %>%
   rename_with(
     ~ .x %>%
-      str_replace_all("G8_1_([0-9]+)_G1a", "platform_a.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_G1c", "platform_b.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Gb",  "platform_c.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Gd",  "platform_d.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Ge",  "platform_e.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Gf",  "platform_f.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Gg",  "platform_g.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Gh",  "platform_h.\\1") %>%
-      str_replace_all("G8_1_([0-9]+)_Gi",  "platform_i.\\1"),
+      str_replace_all("G8_1_([0-9]+)_Ga", "platform_a.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gb", "platform_b.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gc", "platform_c.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gd", "platform_d.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Ge", "platform_e.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gf", "platform_f.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gg", "platform_g.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gh", "platform_h.\\1") %>%
+      str_replace_all("G8_1_([0-9]+)_Gi", "platform_i.\\1"),
     starts_with("G8_1_")
   )
 ```
@@ -648,7 +644,6 @@ alpha_pm
   
 ## Subset Variables of Interest  
 ```{r subset data}
-#| cache: false
 ocsea_df <- df_wgt %>%
   select(
     contains("CBU_ID"),
@@ -976,8 +971,6 @@ svy_overall %>%
   add_overall() 
 victim_measures
 ```
-
-
 
 ## Technology-facilitated CSEA Overall 
 To estimate the overall prevalence of technology-facilitated CSEA among children in the sample, we calculated a weighted proportion using the victim variable and survey weights.The final estimate suggests that approximately percentage_overall% of internet-using children in the sample experienced at least one instance of technology-facilitated CSEA that occurred online.
@@ -1755,6 +1748,7 @@ figure1_a <- ggplot(extended_data, aes(x = pct, y = COUNTRY)) +
   # keep all points regardless of n
   geom_point(aes(colour = pct), size = 2.6) +
   facet_wrap(~ harm, ncol = 3, labeller = label_wrap_gen(width = 28)) +
+  scale_y_discrete(labels = function(x) if_else(x == "Philippines", "The Philippines", x)) +
   scale_x_continuous(
     breaks = seq(0, 20, 5),
     labels = function(x) sprintf("%g%%", x),
@@ -1777,9 +1771,10 @@ figure1_a <- ggplot(extended_data, aes(x = pct, y = COUNTRY)) +
   theme_minimal(base_size = 11, base_family = "sans") +
   theme(
     plot.title.position = "plot",
-    strip.background   = element_rect(fill = "black", colour = "black"),
-    strip.text         = element_text(colour = "white", face = "bold",
-                                      size = 11, family = "sans"),
+    strip.background   = element_blank(),
+    strip.text         = element_text(colour = "black", face = "bold",
+                                      size = 11, family = "sans",
+                                      margin = margin(t = 3, b = 3)),
     panel.border       = element_rect(colour = "black", fill = NA,
                                       linewidth = 0.4),
     panel.grid.major.y = element_blank(),
@@ -1787,6 +1782,8 @@ figure1_a <- ggplot(extended_data, aes(x = pct, y = COUNTRY)) +
     axis.title.x       = element_text(margin = margin(t = 8), family = "sans"),
     axis.title.y       = element_text(margin = margin(r = 8), family = "sans"),
     axis.text          = element_text(family = "sans"),
+    axis.line          = element_line(color = "black", linewidth = 0.4),
+    axis.ticks         = element_line(color = "black", linewidth = 0.4),
     legend.position    = "bottom",
     legend.title       = element_text(size = 9, family = "sans"),
     legend.text        = element_text(size = 8, family = "sans")
@@ -2336,7 +2333,6 @@ perp_df
 
 ## Online Platforms Involved in Technology-Facilitated CSEA Incidents
 ```{r pivot platforms}
-#| cache: false
 # prepare platform data 
 allplatforms <- ocsea_df %>%
   select(wgt_scaled, starts_with("platform_")) %>%
@@ -2398,6 +2394,7 @@ allplatforms <- ocsea_df %>%
 ```
 
 ```{r pivot platforms2}
+#| cache: false
 # create heatplot for platform-specific CSEA
 allplatforms_heatplot <- function(data) {
   data <- data %>%
